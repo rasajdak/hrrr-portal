@@ -203,8 +203,11 @@
   // fields render smooth (gouraud) now, so no pixelation on zoom
   function applyCrisp(){}
 
+  // bump when the renderer changes so browsers don't serve stale cached PNGs
+  var RENDER_VERSION="g2-smooth";
   function overlayUrl(f){
-    return "/api/overlay?field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+"&fxx="+(f===undefined?fxx:f);
+    return "/api/overlay?field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+
+           "&fxx="+(f===undefined?fxx:f)+"&rv="+RENDER_VERSION;
   }
 
   // run is 'YYYYMMDDHH' in UTC -> Date of the init time
