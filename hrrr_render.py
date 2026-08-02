@@ -33,7 +33,10 @@ import cartopy.crs as ccrs
 # Fixed render box covering the HRRR CONUS domain (with a little margin).
 # W, E, S, N  in degrees.
 EXTENT = (-134.0, -60.0, 21.0, 53.0)
-IMG_WIDTH = 1500  # px; height derived from the mercator aspect of EXTENT
+# HRRR's native CONUS grid is ~1799 px wide (3 km). Render well above that so
+# individual grid cells stay crisp when the single overlay image is zoomed in,
+# instead of being upscaled from below-native resolution (which reads as blur).
+IMG_WIDTH = 2800  # px; height derived from the mercator aspect of EXTENT
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
