@@ -362,13 +362,12 @@ def _draw(f, data, lat, lon, out_path):
     ax.set_aspect("auto")           # fill the frame; aspect already matched
     ax.set_axis_off()
 
-    # mask non-finite so ocean / off-grid stays transparent
-    masked = np.ma.masked_invalid(data)
-    ax.pcolormesh(
-        lon, lat, masked,
-        transform=ccrs.PlateCarree(),
-        cmap=cmap, norm=norm, shading="auto",
-    )
+    field = np.ma.masked_invalid(data)  # ocean / off-grid stays transparent
+    # Gouraud shading interpolates color smoothly between the 3 km grid points —
+    # the smooth "pro" look (like Pivotal), but ~15x faster than filled contours.
+    ax.pcolormesh(lon, lat, field, transform=ccrs.PlateCarree(),
+                  cmap=cmap, norm=norm, shading="gouraud")
+
     fig.savefig(out_path, transparent=True, dpi=dpi,
                 pad_inches=0, bbox_inches=None)
     plt.close(fig)

@@ -175,7 +175,7 @@
     {key:"nexrad", group:"Observed", label:"NEXRAD radar (3-hr loop)", legend:"radar",
      info:"NWS base-reflectivity mosaic", maxNativeZoom:8,
      attribution:"NEXRAD mosaic · IEM / NWS",
-     history:{hours:3, stepMin:5, latencyMin:10},
+     history:{hours:3, stepMin:10, latencyMin:10},
      url:function(){ return "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png"; }},
     {key:"goes", group:"Observed", label:"GOES-19 GeoColor (day/night)", legend:"goes",
      info:"True color by day · IR blend at night", maxNativeZoom:7,
@@ -194,19 +194,14 @@
   var tileLayer=null;                     // L.tileLayer for an Observed layer
   var activeLayer=null;                   // whichever layer opacity should target
   var activeIsTile=false;
-  var radarMode=false, radarTimes=[], radarIdx=0;  // NEXRAD history loop
+  var radarMode=false, radarTimes=[], radarIdx=0, radarLayers=[];  // NEXRAD loop
 
   var statusEl=$("status");
   function status(msg,err){ if(!msg){statusEl.className="";statusEl.textContent="";return;}
     statusEl.textContent=msg; statusEl.className="on"+(err?" err":""); }
 
-  // crisp 3km cells past this zoom; smooth (default) below it
-  var CRISP_ZOOM=7;
-  function applyCrisp(){
-    if(!overlay) return; var el=overlay.getElement(); if(!el) return;
-    el.classList.toggle("hrrr-crisp", map.getZoom()>=CRISP_ZOOM);
-  }
-  map.on("zoomend", applyCrisp);
+  // fields render smooth (gouraud) now, so no pixelation on zoom
+  function applyCrisp(){}
 
   function overlayUrl(f){
     return "/api/overlay?field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+"&fxx="+(f===undefined?fxx:f);
@@ -257,7 +252,7 @@
   }
 
   function activateHrrr(k){
-    activeIsTile=false; radarMode=false;
+    activeIsTile=false; radarMode=false; clearRadarLayers();
     $("slider").max=CFG.max_fxx; $("slider").step=1; $("fmax").textContent=CFG.max_fxx;
     if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     var f=CFG.fields.find(function(x){return x.key===k;});
@@ -272,7 +267,7 @@
   }
 
   function activateTile(tf){
-    stop(); activeIsTile=true; radarMode=false; closeMeteo();
+    stop(); activeIsTile=true; radarMode=false; closeMeteo(); clearRadarLayers();
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);  // no HRRR/observed overlap
     if(tileLayer) map.removeLayer(tileLayer);
     tileLayer=L.tileLayer(tf.url(),{opacity:opacity,maxNativeZoom:tf.maxNativeZoom,
@@ -316,21 +311,30 @@
     for(var i=n;i>=0;i--){ var d=new Date(now.getTime()-i*h.stepMin*60000); arr.push({ts:fmtTS(d),date:d}); }
     return arr;
   }
+  function clearRadarLayers(){ radarLayers.forEach(function(l){ map.removeLayer(l); }); radarLayers=[]; }
   function activateRadar(tf){
     stop(); activeIsTile=true; radarMode=true; closeMeteo();
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);
-    if(tileLayer) map.removeLayer(tileLayer);
+    if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
+    clearRadarLayers();
     radarTimes=buildRadarTimes(tf.history); radarIdx=radarTimes.length-1;
-    tileLayer=L.tileLayer(radarTileUrl(radarTimes[radarIdx].ts),
-      {opacity:opacity,maxNativeZoom:tf.maxNativeZoom,maxZoom:map.getMaxZoom(),
-       attribution:tf.attribution,updateWhenIdle:false,keepBuffer:6}).addTo(map);
-    activeLayer=tileLayer; showTileLegend(tf); setTimelineEnabled(true);
+    // Stack every frame as its own tile layer (opacity 0 except the current one)
+    // so the whole loop preloads once, then playback is just an opacity swap.
+    radarLayers=radarTimes.map(function(fr,i){
+      return L.tileLayer(radarTileUrl(fr.ts),
+        {opacity:(i===radarIdx?opacity:0),maxNativeZoom:tf.maxNativeZoom,
+         maxZoom:map.getMaxZoom(),attribution:tf.attribution,
+         updateWhenIdle:false,keepBuffer:8,className:"radar-frame"}).addTo(map);
+    });
+    activeLayer=null; showTileLegend(tf); setTimelineEnabled(true);
     $("slider").max=radarTimes.length-1; $("slider").step=1; $("fmax").textContent=radarTimes.length-1;
     updateRadarHeader(); status(null);
   }
   function setRadarIdx(v){
-    radarIdx=Math.max(0,Math.min(radarTimes.length-1,v));
-    tileLayer.setUrl(radarTileUrl(radarTimes[radarIdx].ts));
+    v=Math.max(0,Math.min(radarTimes.length-1,v));
+    if(radarLayers[radarIdx]) radarLayers[radarIdx].setOpacity(0);
+    radarIdx=v;
+    if(radarLayers[radarIdx]) radarLayers[radarIdx].setOpacity(opacity);
     updateRadarHeader();
   }
   function updateRadarHeader(){
@@ -360,7 +364,9 @@
     curBase=bases[e.target.value].addTo(map); curBase.bringToBack();
     if(e.target.value==="sat")labels.addTo(map);
   });
-  $("opacity").addEventListener("input",function(e){ opacity=e.target.value/100; if(activeLayer&&activeLayer.setOpacity)activeLayer.setOpacity(opacity); });
+  $("opacity").addEventListener("input",function(e){ opacity=e.target.value/100;
+    if(radarMode){ if(radarLayers[radarIdx]) radarLayers[radarIdx].setOpacity(opacity); }
+    else if(activeLayer&&activeLayer.setOpacity) activeLayer.setOpacity(opacity); });
   $("slider").addEventListener("input",function(e){ tlSet(parseInt(e.target.value,10)); });
   $("stepfwd").addEventListener("click",function(){ tlStep(1); });
   $("stepback").addEventListener("click",function(){ tlStep(-1); });
