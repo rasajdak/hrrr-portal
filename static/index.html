@@ -66,6 +66,8 @@
   #meteo .mnow{font-size:20px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
   #meteo .mnow small{font-size:11px;color:var(--muted);font-weight:500}
   #meteo svg{display:block;width:100%;height:78px;margin-top:4px;overflow:visible}
+  /* crisp 3km cells when zoomed in (added/removed by zoom handler) */
+  .leaflet-image-layer.hrrr-crisp{ image-rendering:-webkit-optimize-contrast; image-rendering:crisp-edges; image-rendering:pixelated; }
   .leaflet-popup-content-wrapper{background:#0f1723;color:var(--ink);border:1px solid var(--line)}
   .leaflet-popup-tip{background:#0f1723}
   .leaflet-popup-content{margin:9px 12px;font-size:12.5px} .leaflet-popup-content b{color:var(--accent)}
@@ -162,6 +164,14 @@
   function status(msg,err){ if(!msg){statusEl.className="";statusEl.textContent="";return;}
     statusEl.textContent=msg; statusEl.className="on"+(err?" err":""); }
 
+  // crisp 3km cells past this zoom; smooth (default) below it
+  var CRISP_ZOOM=7;
+  function applyCrisp(){
+    if(!overlay) return; var el=overlay.getElement(); if(!el) return;
+    el.classList.toggle("hrrr-crisp", map.getZoom()>=CRISP_ZOOM);
+  }
+  map.on("zoomend", applyCrisp);
+
   function overlayUrl(f){
     return "/api/overlay?field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+"&fxx="+(f===undefined?fxx:f);
   }
@@ -187,6 +197,7 @@
     img.onload=function(){
       if(!overlay){ overlay=L.imageOverlay(url,bounds,{opacity:opacity,interactive:false}).addTo(map); }
       else{ overlay.setUrl(url); overlay.setOpacity(opacity); }
+      applyCrisp();
       status(null);
     };
     img.onerror=function(){
