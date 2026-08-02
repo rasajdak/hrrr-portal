@@ -172,9 +172,10 @@
   // "Observed" layers: external tile sources, selected like a field (no overlap
   // with the rendered HRRR layers — one is shown at a time).
   var TILE_FIELDS = [
-    {key:"nexrad", group:"Observed", label:"NEXRAD radar (composite)", legend:"radar",
-     info:"Live NWS base-reflectivity mosaic", maxNativeZoom:8,
+    {key:"nexrad", group:"Observed", label:"NEXRAD radar (3-hr loop)", legend:"radar",
+     info:"NWS base-reflectivity mosaic", maxNativeZoom:8,
      attribution:"NEXRAD mosaic · IEM / NWS",
+     history:{hours:3, stepMin:5, latencyMin:10},
      url:function(){ return "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png"; }},
     {key:"goes", group:"Observed", label:"GOES-19 GeoColor (day/night)", legend:"goes",
      info:"True color by day · IR blend at night", maxNativeZoom:7,
@@ -193,6 +194,7 @@
   var tileLayer=null;                     // L.tileLayer for an Observed layer
   var activeLayer=null;                   // whichever layer opacity should target
   var activeIsTile=false;
+  var radarMode=false, radarTimes=[], radarIdx=0;  // NEXRAD history loop
 
   var statusEl=$("status");
   function status(msg,err){ if(!msg){statusEl.className="";statusEl.textContent="";return;}
@@ -249,11 +251,14 @@
   function setField(k){
     field=k;
     var tf=tileField(k);
-    if(tf) activateTile(tf); else activateHrrr(k);
+    if(tf && tf.history) activateRadar(tf);
+    else if(tf) activateTile(tf);
+    else activateHrrr(k);
   }
 
   function activateHrrr(k){
-    activeIsTile=false;
+    activeIsTile=false; radarMode=false;
+    $("slider").max=CFG.max_fxx; $("slider").step=1; $("fmax").textContent=CFG.max_fxx;
     if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     var f=CFG.fields.find(function(x){return x.key===k;});
     $("legcustom").classList.remove("on"); $("legimg").style.display="";
@@ -267,7 +272,7 @@
   }
 
   function activateTile(tf){
-    stop(); activeIsTile=true; closeMeteo();
+    stop(); activeIsTile=true; radarMode=false; closeMeteo();
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);  // no HRRR/observed overlap
     if(tileLayer) map.removeLayer(tileLayer);
     tileLayer=L.tileLayer(tf.url(),{opacity:opacity,maxNativeZoom:tf.maxNativeZoom,
@@ -300,6 +305,48 @@
     $("timeline").style.opacity=on?"1":".6";
   }
 
+  // ---- NEXRAD history loop ----
+  function fmtTS(d){ function p(n){return (n<10?"0":"")+n;}
+    return d.getUTCFullYear()+p(d.getUTCMonth()+1)+p(d.getUTCDate())+p(d.getUTCHours())+p(d.getUTCMinutes()); }
+  function radarTileUrl(ts){ return "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-"+ts+"/{z}/{x}/{y}.png"; }
+  function buildRadarTimes(h){
+    var arr=[], now=new Date(Date.now()-h.latencyMin*60000);
+    now.setUTCMinutes(Math.floor(now.getUTCMinutes()/h.stepMin)*h.stepMin,0,0);
+    var n=Math.round(h.hours*60/h.stepMin);
+    for(var i=n;i>=0;i--){ var d=new Date(now.getTime()-i*h.stepMin*60000); arr.push({ts:fmtTS(d),date:d}); }
+    return arr;
+  }
+  function activateRadar(tf){
+    stop(); activeIsTile=true; radarMode=true; closeMeteo();
+    if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);
+    if(tileLayer) map.removeLayer(tileLayer);
+    radarTimes=buildRadarTimes(tf.history); radarIdx=radarTimes.length-1;
+    tileLayer=L.tileLayer(radarTileUrl(radarTimes[radarIdx].ts),
+      {opacity:opacity,maxNativeZoom:tf.maxNativeZoom,maxZoom:map.getMaxZoom(),
+       attribution:tf.attribution,updateWhenIdle:false,keepBuffer:6}).addTo(map);
+    activeLayer=tileLayer; showTileLegend(tf); setTimelineEnabled(true);
+    $("slider").max=radarTimes.length-1; $("slider").step=1; $("fmax").textContent=radarTimes.length-1;
+    updateRadarHeader(); status(null);
+  }
+  function setRadarIdx(v){
+    radarIdx=Math.max(0,Math.min(radarTimes.length-1,v));
+    tileLayer.setUrl(radarTileUrl(radarTimes[radarIdx].ts));
+    updateRadarHeader();
+  }
+  function updateRadarHeader(){
+    var d=radarTimes[radarIdx].date, ago=Math.round((Date.now()-d.getTime())/60000);
+    $("validloc").textContent=d.toLocaleString([], {weekday:"short",hour:"numeric",minute:"2-digit"});
+    $("validutc").textContent=("0"+d.getUTCHours()).slice(-2)+("0"+d.getUTCMinutes()).slice(-2)+"Z";
+    $("lead").innerHTML=(radarIdx===radarTimes.length-1?"LATEST":("−"+ago+"m"))+' <span>radar</span>';
+    $("fhr").textContent=radarIdx; $("slider").value=radarIdx;
+  }
+
+  // ---- timeline dispatch (HRRR forecast hours vs radar time frames) ----
+  function tlSet(v){ if(radarMode) setRadarIdx(v); else setFxx(v); }
+  function tlStep(d){ if(radarMode) setRadarIdx(radarIdx+d); else setFxx(fxx+d); }
+  function tlNext(){ if(radarMode){ var n=radarIdx+1; if(n>=radarTimes.length)n=0; setRadarIdx(n); }
+                     else { var n=fxx+1; if(n>CFG.max_fxx)n=0; setFxx(n); } }
+
   function setFxx(v){
     if(activeIsTile) return;
     var f=CFG.fields.find(function(x){return x.key===field;});
@@ -314,25 +361,25 @@
     if(e.target.value==="sat")labels.addTo(map);
   });
   $("opacity").addEventListener("input",function(e){ opacity=e.target.value/100; if(activeLayer&&activeLayer.setOpacity)activeLayer.setOpacity(opacity); });
-  $("slider").addEventListener("input",function(e){ setFxx(parseInt(e.target.value,10)); });
-  $("stepfwd").addEventListener("click",function(){ setFxx(fxx+1); });
-  $("stepback").addEventListener("click",function(){ setFxx(fxx-1); });
+  $("slider").addEventListener("input",function(e){ tlSet(parseInt(e.target.value,10)); });
+  $("stepfwd").addEventListener("click",function(){ tlStep(1); });
+  $("stepback").addEventListener("click",function(){ tlStep(-1); });
 
   // ---- animation ----
   var playing=false,timer=null,playBtn=$("play"),prefetched=false;
-  function prefetch(){                 // warm all frames so the loop is smooth
-    if(prefetched) return; prefetched=true;
+  function prefetch(){                 // warm all HRRR frames so the loop is smooth
+    if(prefetched||activeIsTile) return; prefetched=true;
     for(var h=0;h<=CFG.max_fxx;h++){ var im=new Image(); im.src=overlayUrl(h); }
   }
-  function tick(){ var n=fxx+1; if(n>CFG.max_fxx)n=0; setFxx(n); }
-  function play(){ if(activeIsTile)return; playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
+  function tick(){ tlNext(); }
+  function play(){ if(activeIsTile&&!radarMode)return; playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
   function stop(){ playing=false;playBtn.textContent="▶"; clearInterval(timer); }
   playBtn.addEventListener("click",function(){ playing?stop():play(); });
   $("speed").addEventListener("change",function(){ if(playing){stop();play();} });
   document.addEventListener("keydown",function(e){
     if(e.target.tagName==="SELECT"||e.target.tagName==="INPUT")return;
     if(e.code==="Space"){e.preventDefault();playing?stop():play();}
-    if(e.code==="ArrowRight")setFxx(fxx+1); if(e.code==="ArrowLeft")setFxx(fxx-1);
+    if(e.code==="ArrowRight")tlStep(1); if(e.code==="ArrowLeft")tlStep(-1);
   });
 
   // ---- click-to-probe + meteogram ----
