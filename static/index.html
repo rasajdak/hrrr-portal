@@ -204,7 +204,7 @@
   function applyCrisp(){}
 
   // bump when the renderer changes so browsers don't serve stale cached PNGs
-  var RENDER_VERSION="g2-smooth";
+  var RENDER_VERSION="g3-2400";
   function overlayUrl(f){
     return "/api/overlay?field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+
            "&fxx="+(f===undefined?fxx:f)+"&rv="+RENDER_VERSION;

@@ -37,7 +37,7 @@ EXTENT = (-134.0, -60.0, 21.0, 53.0)
 # native grid — a moderate width keeps renders fast on a 1-vCPU box and upscales
 # smoothly. STRIDE downsamples the 3 km grid before shading (fewer triangles to
 # rasterize); gouraud fills the gaps smoothly, so the look holds.
-IMG_WIDTH = 1700  # px; height derived from the mercator aspect of EXTENT
+IMG_WIDTH = 2400  # px; height derived from the mercator aspect of EXTENT
 STRIDE = 2        # grid downsample factor for rendering (point-probe uses full grid)
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
