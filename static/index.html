@@ -44,6 +44,10 @@
     border:1px solid var(--line);border-radius:10px;padding:9px 11px;backdrop-filter:blur(6px);width:230px}
   #legend .lt{font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
   #legimg{width:100%;height:auto;display:block}
+  #legcustom{display:none} #legcustom.on{display:block}
+  #legcustom .bar{height:12px;border-radius:4px}
+  #legcustom .row{display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted);margin-top:3px}
+  #legcustom .note{font-size:11px;color:var(--muted);line-height:1.4}
 
   #opwrap{display:flex;align-items:center;gap:8px} #opwrap input[type=range]{width:90px;flex:none}
   .pill{font-size:10.5px;color:var(--accent2);border:1px solid rgba(51,214,159,.35);background:rgba(51,214,159,.08);
@@ -85,16 +89,15 @@
     <select id="field"></select>
   </div>
   <div class="group">
-    <label>Observed</label>
-    <select id="obs">
-      <option value="none">— off —</option>
-      <option value="radar">NEXRAD radar (live)</option>
-    </select>
-  </div>
-  <div class="group">
     <label>Basemap</label>
     <select id="basemap">
-      <option value="dark">Dark</option><option value="light">Light</option><option value="sat">Satellite</option>
+      <option value="dark">Dark</option>
+      <option value="light">Light</option>
+      <option value="gray">Gray</option>
+      <option value="sat">Satellite</option>
+      <option value="streets">Streets</option>
+      <option value="topo">Topographic</option>
+      <option value="terrain">Terrain</option>
     </select>
   </div>
   <div class="group" id="opwrap"><label>Opacity</label><input type="range" id="opacity" min="20" max="100" value="82" /></div>
@@ -117,6 +120,7 @@
 <div id="legend">
   <div class="lt" id="legtitle">Composite reflectivity (dBZ)</div>
   <img id="legimg" alt="legend" />
+  <div id="legcustom"></div>
 </div>
 
 <div id="timeline">
@@ -148,17 +152,47 @@
   var bases = {
     dark: L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
     light:L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
-    sat:  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"})
+    gray: L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
+    sat:  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"}),
+    streets:L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
+    topo: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"}),
+    terrain:L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",{subdomains:"abc",maxZoom:17,attribution:"© OpenTopoMap (CC-BY-SA)"})
   };
   var curBase = bases.dark.addTo(map);
   var labels = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19});
 
-  // live observed NEXRAD (IEM), for forecast-vs-reality comparison
-  var radar = L.tileLayer("https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png",{opacity:0.7,maxNativeZoom:8,maxZoom:10});
+  // GOES-East (=GOES-19) GeoColor updates ~every 20 min with ~20 min latency;
+  // step back 25 min and snap to the :00/:20/:40 grid so the frame exists.
+  function goesTime(){
+    var d=new Date(Date.now()-25*60000);
+    d.setUTCMinutes(Math.floor(d.getUTCMinutes()/20)*20,0,0);
+    return d.toISOString().replace(/\.\d{3}Z$/,"Z");
+  }
+
+  // "Observed" layers: external tile sources, selected like a field (no overlap
+  // with the rendered HRRR layers — one is shown at a time).
+  var TILE_FIELDS = [
+    {key:"nexrad", group:"Observed", label:"NEXRAD radar (composite)", legend:"radar",
+     info:"Live NWS base-reflectivity mosaic", maxNativeZoom:8,
+     attribution:"NEXRAD mosaic · IEM / NWS",
+     url:function(){ return "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png"; }},
+    {key:"goes", group:"Observed", label:"GOES-19 GeoColor (day/night)", legend:"goes",
+     info:"True color by day · IR blend at night", maxNativeZoom:7,
+     attribution:"GOES-19 GeoColor · NASA GIBS",
+     url:function(){ return "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/GOES-East_ABI_GeoColor/default/"+goesTime()+"/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png"; }},
+    {key:"aqi", group:"Observed", label:"Air quality (US AQI)", legend:"aqi",
+     info:"Nearest-station US EPA Air Quality Index", maxNativeZoom:12,
+     attribution:"AQI · World Air Quality Index (waqi.info)",
+     url:function(){ return "https://tiles.waqi.info/tiles/usepa-aqi/{z}/{x}/{y}.png?token=_"; }}
+  ];
+  function tileField(k){ return TILE_FIELDS.find(function(x){return x.key===k;}); }
 
   // ---- state ----
   var CFG=null, field="refc", fxx=0, run=null, bounds=null, opacity=0.82;
   var overlay=null;                       // L.imageOverlay for the HRRR field
+  var tileLayer=null;                     // L.tileLayer for an Observed layer
+  var activeLayer=null;                   // whichever layer opacity should target
+  var activeIsTile=false;
 
   var statusEl=$("status");
   function status(msg,err){ if(!msg){statusEl.className="";statusEl.textContent="";return;}
@@ -196,7 +230,8 @@
     var img=new Image();
     img.onload=function(){
       if(!overlay){ overlay=L.imageOverlay(url,bounds,{opacity:opacity,interactive:false}).addTo(map); }
-      else{ overlay.setUrl(url); overlay.setOpacity(opacity); }
+      else{ if(!map.hasLayer(overlay)) overlay.addTo(map); overlay.setUrl(url); overlay.setOpacity(opacity); }
+      activeLayer=overlay;
       applyCrisp();
       status(null);
     };
@@ -213,29 +248,72 @@
 
   function setField(k){
     field=k;
+    var tf=tileField(k);
+    if(tf) activateTile(tf); else activateHrrr(k);
+  }
+
+  function activateHrrr(k){
+    activeIsTile=false;
+    if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     var f=CFG.fields.find(function(x){return x.key===k;});
+    $("legcustom").classList.remove("on"); $("legimg").style.display="";
     $("legtitle").textContent=f.label+" ("+f.unit+")";
     $("legimg").src="/api/legend?field="+k;
-    // clamp fxx to this field's minimum (e.g. precip needs F>=1)
+    setTimelineEnabled(true);
     if(fxx<f.min_fxx) fxx=f.min_fxx;
     prefetched=false;                 // new field -> new frames to warm
     draw();
     if(probeLatLng) loadSeries();     // re-probe the pinned point for this field
   }
+
+  function activateTile(tf){
+    stop(); activeIsTile=true; closeMeteo();
+    if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);  // no HRRR/observed overlap
+    if(tileLayer) map.removeLayer(tileLayer);
+    tileLayer=L.tileLayer(tf.url(),{opacity:opacity,maxNativeZoom:tf.maxNativeZoom,
+      maxZoom:map.getMaxZoom(),attribution:tf.attribution}).addTo(map);
+    activeLayer=tileLayer;
+    showTileLegend(tf);
+    setTimelineEnabled(false);
+    $("lead").innerHTML='LIVE <span>observed</span>';
+    $("validloc").textContent=tf.info;
+    $("validutc").textContent = tf.key==="goes" ? (goesTime().slice(11,16)+"Z") : "now";
+    $("fhr").textContent="–"; status(null);
+  }
+
+  function showTileLegend(tf){
+    $("legimg").style.display="none";
+    var lc=$("legcustom"); lc.classList.add("on"); $("legtitle").textContent=tf.label;
+    if(tf.legend==="radar"){
+      lc.innerHTML='<div class="bar" style="background:linear-gradient(90deg,#04a10a,#1ee62a,#f7f708,#f7a808,#f70808,#bd0000,#f700f7)"></div>'+
+        '<div class="row"><span>5</span><span>25</span><span>45</span><span>65</span><span>75 dBZ</span></div>';
+    } else if(tf.legend==="aqi"){
+      lc.innerHTML='<div class="bar" style="background:linear-gradient(90deg,#00e400,#ffff00,#ff7e00,#ff0000,#8f3f97,#7e0023)"></div>'+
+        '<div class="row"><span>Good</span><span>Mod</span><span>USG</span><span>Unhlth</span><span>Hazard</span></div>';
+    } else {
+      lc.innerHTML='<div class="note">True color by day; multispectral IR blend at night. Frame '+goesTime().slice(11,16)+'Z, updates ~20 min.</div>';
+    }
+  }
+
+  function setTimelineEnabled(on){
+    ["slider","play","stepfwd","stepback","speed"].forEach(function(id){ $(id).disabled=!on; });
+    $("timeline").style.opacity=on?"1":".6";
+  }
+
   function setFxx(v){
+    if(activeIsTile) return;
     var f=CFG.fields.find(function(x){return x.key===field;});
     fxx=Math.max(f.min_fxx||0,Math.min(CFG.max_fxx, v)); draw();
   }
 
   // ---- controls ----
   $("field").addEventListener("change",function(e){ setField(e.target.value); });
-  $("obs").addEventListener("change",function(e){ e.target.value==="radar"?radar.addTo(map):map.removeLayer(radar); });
   $("basemap").addEventListener("change",function(e){
     map.removeLayer(curBase); if(map.hasLayer(labels))map.removeLayer(labels);
     curBase=bases[e.target.value].addTo(map); curBase.bringToBack();
     if(e.target.value==="sat")labels.addTo(map);
   });
-  $("opacity").addEventListener("input",function(e){ opacity=e.target.value/100; if(overlay)overlay.setOpacity(opacity); });
+  $("opacity").addEventListener("input",function(e){ opacity=e.target.value/100; if(activeLayer&&activeLayer.setOpacity)activeLayer.setOpacity(opacity); });
   $("slider").addEventListener("input",function(e){ setFxx(parseInt(e.target.value,10)); });
   $("stepfwd").addEventListener("click",function(){ setFxx(fxx+1); });
   $("stepback").addEventListener("click",function(){ setFxx(fxx-1); });
@@ -247,7 +325,7 @@
     for(var h=0;h<=CFG.max_fxx;h++){ var im=new Image(); im.src=overlayUrl(h); }
   }
   function tick(){ var n=fxx+1; if(n>CFG.max_fxx)n=0; setFxx(n); }
-  function play(){ playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
+  function play(){ if(activeIsTile)return; playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
   function stop(){ playing=false;playBtn.textContent="▶"; clearInterval(timer); }
   playBtn.addEventListener("click",function(){ playing?stop():play(); });
   $("speed").addEventListener("change",function(){ if(playing){stop();play();} });
@@ -264,16 +342,18 @@
   function fmtVal(v,f){ return v==null ? "—" : (Math.abs(v)>=100?Math.round(v):v)+" "+f.unit; }
 
   map.on("click",function(e){
+    if(activeIsTile) return;            // point-probe applies to HRRR fields only
     probeLatLng=e.latlng;
     if(!probeMarker){ probeMarker=L.circleMarker(e.latlng,{radius:6,color:"#4ea3ff",weight:2,fillColor:"#4ea3ff",fillOpacity:.5}).addTo(map); }
     else probeMarker.setLatLng(e.latlng);
     $("meteo").classList.add("on");
     loadSeries();
   });
-  $("meteoClose").addEventListener("click",function(){
+  function closeMeteo(){
     $("meteo").classList.remove("on"); probeLatLng=null; series=null;
     if(probeMarker){ map.removeLayer(probeMarker); probeMarker=null; }
-  });
+  }
+  $("meteoClose").addEventListener("click",closeMeteo);
 
   function loadSeries(){
     if(!probeLatLng) return;
@@ -333,6 +413,10 @@
       if(f.group!==curGroup){ curGroup=f.group; og=document.createElement("optgroup"); og.label=f.group; sel.appendChild(og); }
       var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og.appendChild(o);
     });
+    // observed (external tile) fields as their own group
+    var og2=document.createElement("optgroup"); og2.label="Observed";
+    TILE_FIELDS.forEach(function(f){ var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og2.appendChild(o); });
+    sel.appendChild(og2);
     // ticks
     var t=$("ticks"); for(var h=0;h<=cfg.max_fxx;h+=3){ var s=document.createElement("span"); s.textContent="F"+h; t.appendChild(s); }
     setField("refc");
