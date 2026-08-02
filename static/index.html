@@ -183,7 +183,7 @@
     {key:"aqi", group:"Observed", label:"Air quality (US AQI)", legend:"aqi",
      info:"Nearest-station US EPA Air Quality Index", maxNativeZoom:12,
      attribution:"AQI · World Air Quality Index (waqi.info)",
-     url:function(){ return "https://tiles.waqi.info/tiles/usepa-aqi/{z}/{x}/{y}.png?token=_"; }}
+     url:function(){ return "/api/tiles/aqi/{z}/{x}/{y}.png"; }}
   ];
   function tileField(k){ return TILE_FIELDS.find(function(x){return x.key===k;}); }
 
