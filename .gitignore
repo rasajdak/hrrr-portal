@@ -1,0 +1,9 @@
+cache/
+data/
+__pycache__/
+*.pyc
+.venv/
+hrrr_data/
+*.grib2
+*.idx
+.DS_Store

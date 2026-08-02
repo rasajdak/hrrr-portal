@@ -1,0 +1,11 @@
+# pip route (see environment.yml for the easier conda route on a droplet).
+# NOTE: cartopy needs system libs geos/proj; cfgrib/eccodes need libeccodes.
+# On Ubuntu:  sudo apt-get install -y libgeos-dev libproj-dev libeccodes0
+flask>=3.0
+gunicorn>=21.0
+herbie-data>=2024.3
+xarray>=2024.1
+cfgrib>=0.9.11
+numpy>=1.26
+matplotlib>=3.8
+cartopy>=0.22

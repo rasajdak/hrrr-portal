@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>HRRR Interpretation Portal</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root{
+    --bg:#0b1017; --panel:#131b26; --panel2:#1b2634; --line:#243244;
+    --ink:#e8eef6; --muted:#8ea3bd; --accent:#4ea3ff; --accent2:#33d69f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  #map{position:absolute;inset:0;background:var(--bg)}
+  .leaflet-container{background:var(--bg)}
+
+  #bar{position:absolute;top:0;left:0;right:0;z-index:1000;display:flex;align-items:center;gap:14px;
+    flex-wrap:wrap;padding:10px 14px;background:linear-gradient(180deg,rgba(11,16,23,.96),rgba(11,16,23,.82));
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  #bar h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px;white-space:nowrap}
+  #bar h1 small{display:block;font-size:10.5px;color:var(--muted);font-weight:500}
+  .group{display:flex;align-items:center;gap:7px}
+  .group>label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  select,button{font:inherit;font-size:12.5px;color:var(--ink);background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:6px 9px;cursor:pointer}
+  select:hover,button:hover{border-color:var(--accent)}
+  button.icon{width:34px;height:32px;padding:0;font-size:14px;display:grid;place-items:center}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#04121f;font-weight:650}
+
+  #timeline{position:absolute;left:14px;right:14px;bottom:14px;z-index:1000;
+    background:linear-gradient(180deg,rgba(19,27,38,.92),rgba(11,16,23,.94));border:1px solid var(--line);
+    border-radius:14px;padding:12px 16px 14px;box-shadow:0 12px 40px rgba(0,0,0,.45);backdrop-filter:blur(8px)}
+  #tlhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:12px;flex-wrap:wrap}
+  #valid{font-size:13px;color:var(--muted)} #valid b{color:var(--ink);font-variant-numeric:tabular-nums}
+  #lead{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums} #lead span{font-size:12px;color:var(--muted);font-weight:500}
+  .tlrow{display:flex;align-items:center;gap:12px}
+  input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:6px;background:#26313f;outline:none;cursor:pointer}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--accent);border:3px solid #0b1017;box-shadow:0 0 0 1px var(--accent);cursor:pointer}
+  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--accent);border:3px solid #0b1017;cursor:pointer}
+  #ticks{display:flex;justify-content:space-between;margin-top:4px;font-size:9.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+  #legend{position:absolute;right:14px;bottom:120px;z-index:900;background:rgba(19,27,38,.92);
+    border:1px solid var(--line);border-radius:10px;padding:9px 11px;backdrop-filter:blur(6px);width:230px}
+  #legend .lt{font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+  #legimg{width:100%;height:auto;display:block}
+
+  #opwrap{display:flex;align-items:center;gap:8px} #opwrap input[type=range]{width:90px;flex:none}
+  .pill{font-size:10.5px;color:var(--accent2);border:1px solid rgba(51,214,159,.35);background:rgba(51,214,159,.08);
+    padding:3px 8px;border-radius:20px;white-space:nowrap}
+  #status{position:absolute;top:58px;left:50%;transform:translateX(-50%);z-index:1200;background:rgba(19,27,38,.96);
+    border:1px solid var(--line);border-radius:20px;padding:6px 14px;font-size:12px;color:var(--muted);display:none}
+  #status.on{display:block} #status.err{color:#ff9b9b;border-color:#5a2b2b}
+  a.credit{position:absolute;left:14px;bottom:150px;z-index:800;font-size:10px;color:var(--muted);text-decoration:none;
+    background:rgba(11,16,23,.6);padding:2px 6px;border-radius:6px}
+
+  /* click-to-probe meteogram */
+  #meteo{position:absolute;left:14px;bottom:170px;z-index:950;width:300px;background:rgba(19,27,38,.95);
+    border:1px solid var(--line);border-radius:12px;padding:11px 13px 9px;backdrop-filter:blur(8px);
+    box-shadow:0 10px 34px rgba(0,0,0,.45);display:none}
+  #meteo.on{display:block}
+  #meteo .mh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:2px}
+  #meteo .mt{font-size:12px;font-weight:650;color:var(--ink)}
+  #meteo .mx{cursor:pointer;color:var(--muted);font-size:15px;line-height:1;border:none;background:none;padding:0}
+  #meteo .msub{font-size:10.5px;color:var(--muted);margin-bottom:6px;font-variant-numeric:tabular-nums}
+  #meteo .mnow{font-size:20px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+  #meteo .mnow small{font-size:11px;color:var(--muted);font-weight:500}
+  #meteo svg{display:block;width:100%;height:78px;margin-top:4px;overflow:visible}
+  .leaflet-popup-content-wrapper{background:#0f1723;color:var(--ink);border:1px solid var(--line)}
+  .leaflet-popup-tip{background:#0f1723}
+  .leaflet-popup-content{margin:9px 12px;font-size:12.5px} .leaflet-popup-content b{color:var(--accent)}
+
+  @media (max-width:720px){#bar h1{width:100%} #legend{display:none} #lead{font-size:18px} #meteo{width:230px}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="bar">
+  <h1>HRRR Interpretation Portal<small>NOAA High-Resolution Rapid Refresh · raw GRIB2 · 3 km</small></h1>
+  <div class="group">
+    <label>Field</label>
+    <select id="field"></select>
+  </div>
+  <div class="group">
+    <label>Observed</label>
+    <select id="obs">
+      <option value="none">— off —</option>
+      <option value="radar">NEXRAD radar (live)</option>
+    </select>
+  </div>
+  <div class="group">
+    <label>Basemap</label>
+    <select id="basemap">
+      <option value="dark">Dark</option><option value="light">Light</option><option value="sat">Satellite</option>
+    </select>
+  </div>
+  <div class="group" id="opwrap"><label>Opacity</label><input type="range" id="opacity" min="20" max="100" value="82" /></div>
+  <span class="pill" id="runpill">connecting…</span>
+</div>
+
+<div id="status"></div>
+<a class="credit" href="https://rapidrefresh.noaa.gov/hrrr/" target="_blank" rel="noopener">Data: NOAA HRRR via AWS Open Data · rendered from raw GRIB2</a>
+
+<div id="meteo">
+  <div class="mh">
+    <span class="mt" id="meteoTitle">Point forecast</span>
+    <button class="mx" id="meteoClose" title="Close">×</button>
+  </div>
+  <div class="msub" id="meteoSub">click the map to probe a point</div>
+  <div class="mnow" id="meteoNow">–</div>
+  <svg id="meteoChart" viewBox="0 0 300 78" preserveAspectRatio="none"></svg>
+</div>
+
+<div id="legend">
+  <div class="lt" id="legtitle">Composite reflectivity (dBZ)</div>
+  <img id="legimg" alt="legend" />
+</div>
+
+<div id="timeline">
+  <div id="tlhead">
+    <div id="lead">F+00 <span>lead time</span></div>
+    <div id="valid">Valid <b id="validloc">—</b> &nbsp;·&nbsp; <b id="validutc">—</b> &nbsp;·&nbsp; hr <b id="fhr">0</b>/<b id="fmax">18</b></div>
+  </div>
+  <div class="tlrow">
+    <button class="icon" id="stepback" title="Step back">‹</button>
+    <button class="icon primary" id="play" title="Play / pause">▶</button>
+    <button class="icon" id="stepfwd" title="Step forward">›</button>
+    <input type="range" id="slider" min="0" max="18" step="1" value="0" />
+    <select id="speed" title="Animation speed">
+      <option value="900">Slow</option><option value="600" selected>Normal</option><option value="350">Fast</option>
+    </select>
+  </div>
+  <div id="ticks"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+
+  // ---- map + basemaps ----
+  var map = L.map("map",{zoomControl:true,minZoom:3,maxZoom:10,worldCopyJump:false}).setView([39.5,-96],4);
+  map.zoomControl.setPosition("topright");
+  var bases = {
+    dark: L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
+    light:L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
+    sat:  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"})
+  };
+  var curBase = bases.dark.addTo(map);
+  var labels = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19});
+
+  // live observed NEXRAD (IEM), for forecast-vs-reality comparison
+  var radar = L.tileLayer("https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::USCOMP-N0Q-0/{z}/{x}/{y}.png",{opacity:0.7,maxNativeZoom:8,maxZoom:10});
+
+  // ---- state ----
+  var CFG=null, field="refc", fxx=0, run=null, bounds=null, opacity=0.82;
+  var overlay=null;                       // L.imageOverlay for the HRRR field
+
+  var statusEl=$("status");
+  function status(msg,err){ if(!msg){statusEl.className="";statusEl.textContent="";return;}
+    statusEl.textContent=msg; statusEl.className="on"+(err?" err":""); }
+
+  function overlayUrl(f){
+    return "/api/overlay?field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+"&fxx="+(f===undefined?fxx:f);
+  }
+
+  // run is 'YYYYMMDDHH' in UTC -> Date of the init time
+  function runDate(){
+    return new Date(Date.UTC(+run.slice(0,4), +run.slice(4,6)-1, +run.slice(6,8), +run.slice(8,10)));
+  }
+  function validDate(f){ return new Date(runDate().getTime()+(f===undefined?fxx:f)*3600000); }
+  function updateHeader(){
+    var vd=validDate();
+    $("validloc").textContent=vd.toLocaleString([], {weekday:"short",hour:"numeric",minute:"2-digit"});
+    $("validutc").textContent=("0"+vd.getUTCHours()).slice(-2)+"Z";
+    $("lead").innerHTML="F+"+(fxx<10?"0":"")+fxx+' <span>lead time</span>';
+    $("fhr").textContent=fxx; $("slider").value=fxx;
+  }
+
+  function draw(){
+    var url=overlayUrl();
+    status("rendering "+field+" F"+(fxx<10?"0":"")+fxx+" …");
+    // pre-load into an Image so we can detect success/failure and swap cleanly
+    var img=new Image();
+    img.onload=function(){
+      if(!overlay){ overlay=L.imageOverlay(url,bounds,{opacity:opacity,interactive:false}).addTo(map); }
+      else{ overlay.setUrl(url); overlay.setOpacity(opacity); }
+      status(null);
+    };
+    img.onerror=function(){
+      // backend returns JSON error with a non-200; show a hint
+      fetch(url).then(function(r){return r.json();}).then(function(j){
+        status((j&&j.error)?("⚠ "+j.error):"⚠ render failed", true);
+      }).catch(function(){ status("⚠ render failed (is the server running?)",true); });
+    };
+    img.src=url;
+    updateHeader();
+    updateMeteoCursor();
+  }
+
+  function setField(k){
+    field=k;
+    var f=CFG.fields.find(function(x){return x.key===k;});
+    $("legtitle").textContent=f.label+" ("+f.unit+")";
+    $("legimg").src="/api/legend?field="+k;
+    // clamp fxx to this field's minimum (e.g. precip needs F>=1)
+    if(fxx<f.min_fxx) fxx=f.min_fxx;
+    prefetched=false;                 // new field -> new frames to warm
+    draw();
+    if(probeLatLng) loadSeries();     // re-probe the pinned point for this field
+  }
+  function setFxx(v){
+    var f=CFG.fields.find(function(x){return x.key===field;});
+    fxx=Math.max(f.min_fxx||0,Math.min(CFG.max_fxx, v)); draw();
+  }
+
+  // ---- controls ----
+  $("field").addEventListener("change",function(e){ setField(e.target.value); });
+  $("obs").addEventListener("change",function(e){ e.target.value==="radar"?radar.addTo(map):map.removeLayer(radar); });
+  $("basemap").addEventListener("change",function(e){
+    map.removeLayer(curBase); if(map.hasLayer(labels))map.removeLayer(labels);
+    curBase=bases[e.target.value].addTo(map); curBase.bringToBack();
+    if(e.target.value==="sat")labels.addTo(map);
+  });
+  $("opacity").addEventListener("input",function(e){ opacity=e.target.value/100; if(overlay)overlay.setOpacity(opacity); });
+  $("slider").addEventListener("input",function(e){ setFxx(parseInt(e.target.value,10)); });
+  $("stepfwd").addEventListener("click",function(){ setFxx(fxx+1); });
+  $("stepback").addEventListener("click",function(){ setFxx(fxx-1); });
+
+  // ---- animation ----
+  var playing=false,timer=null,playBtn=$("play"),prefetched=false;
+  function prefetch(){                 // warm all frames so the loop is smooth
+    if(prefetched) return; prefetched=true;
+    for(var h=0;h<=CFG.max_fxx;h++){ var im=new Image(); im.src=overlayUrl(h); }
+  }
+  function tick(){ var n=fxx+1; if(n>CFG.max_fxx)n=0; setFxx(n); }
+  function play(){ playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
+  function stop(){ playing=false;playBtn.textContent="▶"; clearInterval(timer); }
+  playBtn.addEventListener("click",function(){ playing?stop():play(); });
+  $("speed").addEventListener("change",function(){ if(playing){stop();play();} });
+  document.addEventListener("keydown",function(e){
+    if(e.target.tagName==="SELECT"||e.target.tagName==="INPUT")return;
+    if(e.code==="Space"){e.preventDefault();playing?stop():play();}
+    if(e.code==="ArrowRight")setFxx(fxx+1); if(e.code==="ArrowLeft")setFxx(fxx-1);
+  });
+
+  // ---- click-to-probe + meteogram ----
+  var probeLatLng=null, probeMarker=null, series=null, seriesToken=0;
+
+  function curField(){ return CFG.fields.find(function(x){return x.key===field;}); }
+  function fmtVal(v,f){ return v==null ? "—" : (Math.abs(v)>=100?Math.round(v):v)+" "+f.unit; }
+
+  map.on("click",function(e){
+    probeLatLng=e.latlng;
+    if(!probeMarker){ probeMarker=L.circleMarker(e.latlng,{radius:6,color:"#4ea3ff",weight:2,fillColor:"#4ea3ff",fillOpacity:.5}).addTo(map); }
+    else probeMarker.setLatLng(e.latlng);
+    $("meteo").classList.add("on");
+    loadSeries();
+  });
+  $("meteoClose").addEventListener("click",function(){
+    $("meteo").classList.remove("on"); probeLatLng=null; series=null;
+    if(probeMarker){ map.removeLayer(probeMarker); probeMarker=null; }
+  });
+
+  function loadSeries(){
+    if(!probeLatLng) return;
+    var f=curField(), tok=++seriesToken, ll=probeLatLng;
+    series=new Array(CFG.max_fxx+1).fill(undefined);
+    $("meteoTitle").textContent=f.label;
+    $("meteoSub").textContent=ll.lat.toFixed(3)+"°, "+ll.lng.toFixed(3)+"°  ·  loading…";
+    for(var h=(f.min_fxx||0);h<=CFG.max_fxx;h++){
+      (function(hh){
+        fetch("/api/point?field="+field+"&run="+run+"&fxx="+hh+"&lat="+ll.lat+"&lon="+ll.lng)
+          .then(function(r){return r.json();})
+          .then(function(j){ if(tok!==seriesToken)return; series[hh]=(j&&typeof j.value==="number")?j.value:null; drawMeteo(); })
+          .catch(function(){ if(tok!==seriesToken)return; series[hh]=null; drawMeteo(); });
+      })(h);
+    }
+  }
+
+  function drawMeteo(){
+    if(!series || !probeLatLng) return;
+    var f=curField(), svg=$("meteoChart"), W=300,H=78, pad=4;
+    // current-hour readout
+    var cur=series[fxx];
+    $("meteoNow").innerHTML=(typeof cur==="number"?cur:(cur===null?"n/a":"…"))+
+      ' <small>'+f.unit+" · F+"+(fxx<10?"0":"")+fxx+"</small>";
+    // loading progress
+    var done=series.filter(function(v){return v!==undefined;}).length, total=series.length-(f.min_fxx||0);
+    $("meteoSub").textContent=probeLatLng.lat.toFixed(3)+"°, "+probeLatLng.lng.toFixed(3)+"°"+(done<total?"  ·  loading "+done+"/"+total:"");
+    // line chart
+    var pts=[]; for(var h=0;h<series.length;h++){ if(typeof series[h]==="number") pts.push([h,series[h]]); }
+    if(pts.length<1){ svg.innerHTML=""; return; }
+    var vmin=Math.min.apply(null,pts.map(function(p){return p[1];}));
+    var vmax=Math.max.apply(null,pts.map(function(p){return p[1];}));
+    if(vmax-vmin<1e-6) vmax=vmin+1;
+    var x=function(h){ return pad+(W-2*pad)*h/CFG.max_fxx; };
+    var y=function(v){ return pad+(H-2*pad)*(1-(v-vmin)/(vmax-vmin)); };
+    var d=pts.map(function(p,i){return (i?"L":"M")+x(p[0]).toFixed(1)+" "+y(p[1]).toFixed(1);}).join(" ");
+    var s='<line x1="'+x(fxx).toFixed(1)+'" y1="0" x2="'+x(fxx).toFixed(1)+'" y2="'+H+'" stroke="#4ea3ff" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>';
+    s+='<path d="'+d+'" fill="none" stroke="#33d69f" stroke-width="2"/>';
+    pts.forEach(function(p){ s+='<circle cx="'+x(p[0]).toFixed(1)+'" cy="'+y(p[1]).toFixed(1)+'" r="'+(p[0]===fxx?3:1.6)+'" fill="'+(p[0]===fxx?"#4ea3ff":"#33d69f")+'"/>'; });
+    s+='<text x="'+pad+'" y="10" fill="#8ea3bd" font-size="8">'+(Math.round(vmax*10)/10)+'</text>';
+    s+='<text x="'+pad+'" y="'+(H-1)+'" fill="#8ea3bd" font-size="8">'+(Math.round(vmin*10)/10)+'</text>';
+    svg.innerHTML=s;
+  }
+
+  // called from draw() when the forecast hour changes — just move the cursor
+  function updateMeteoCursor(){ if(series) drawMeteo(); }
+
+  // ---- boot ----
+  status("loading configuration…");
+  fetch("/api/config").then(function(r){return r.json();}).then(function(cfg){
+    CFG=cfg; run=cfg.latest_run; bounds=cfg.bounds;
+    $("runpill").textContent="run "+cfg.latest_run_label;
+    $("slider").max=cfg.max_fxx; $("fmax").textContent=cfg.max_fxx;
+    // field dropdown, grouped into <optgroup> by category
+    var sel=$("field"), curGroup=null, og=null;
+    cfg.fields.forEach(function(f){
+      if(f.group!==curGroup){ curGroup=f.group; og=document.createElement("optgroup"); og.label=f.group; sel.appendChild(og); }
+      var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og.appendChild(o);
+    });
+    // ticks
+    var t=$("ticks"); for(var h=0;h<=cfg.max_fxx;h+=3){ var s=document.createElement("span"); s.textContent="F"+h; t.appendChild(s); }
+    setField("refc");
+  }).catch(function(){
+    status("⚠ cannot reach backend — start it with:  python app.py",true);
+    $("runpill").textContent="offline";
+  });
+})();
+</script>
+</body>
+</html>

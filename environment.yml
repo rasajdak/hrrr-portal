@@ -1,0 +1,19 @@
+# Recommended install path (esp. on a droplet): conda-forge resolves the
+# geos/proj/eccodes system libraries for you, avoiding pip build pain.
+#   mamba env create -f environment.yml   &&   conda activate hrrr-portal
+name: hrrr-portal
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - flask
+  - gunicorn
+  - xarray
+  - cfgrib
+  - eccodes
+  - numpy
+  - matplotlib-base
+  - cartopy
+  - pip
+  - pip:
+      - herbie-data

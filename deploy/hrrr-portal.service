@@ -1,0 +1,24 @@
+# /etc/systemd/system/hrrr-portal.service
+# Adjust User and the two paths (ExecStart python, WorkingDirectory) to match
+# your droplet.  With miniforge the gunicorn binary lives in the env's bin/.
+[Unit]
+Description=HRRR Interpretation Portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hrrr
+WorkingDirectory=/opt/hrrr-portal
+Environment=PORT=8000
+# HOME must be writable: Herbie caches GRIB in $HOME/data, matplotlib/cartopy
+# write config/cache there too. Without this the service user has no valid HOME.
+Environment=HOME=/opt/hrrr-portal
+# point this at the gunicorn inside your conda env (or venv)
+ExecStart=/opt/miniforge3/envs/hrrr-portal/bin/gunicorn \
+    --workers 2 --threads 2 --timeout 120 \
+    --bind 127.0.0.1:8000 app:app
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
