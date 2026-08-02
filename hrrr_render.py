@@ -33,10 +33,12 @@ import cartopy.crs as ccrs
 # Fixed render box covering the HRRR CONUS domain (with a little margin).
 # W, E, S, N  in degrees.
 EXTENT = (-134.0, -60.0, 21.0, 53.0)
-# HRRR's native CONUS grid is ~1799 px wide (3 km). Render well above that so
-# individual grid cells stay crisp when the single overlay image is zoomed in,
-# instead of being upscaled from below-native resolution (which reads as blur).
-IMG_WIDTH = 2800  # px; height derived from the mercator aspect of EXTENT
+# Gouraud shading interpolates smoothly, so the output doesn't need to exceed the
+# native grid — a moderate width keeps renders fast on a 1-vCPU box and upscales
+# smoothly. STRIDE downsamples the 3 km grid before shading (fewer triangles to
+# rasterize); gouraud fills the gaps smoothly, so the look holds.
+IMG_WIDTH = 1700  # px; height derived from the mercator aspect of EXTENT
+STRIDE = 2        # grid downsample factor for rendering (point-probe uses full grid)
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -362,10 +364,15 @@ def _draw(f, data, lat, lon, out_path):
     ax.set_aspect("auto")           # fill the frame; aspect already matched
     ax.set_axis_off()
 
-    field = np.ma.masked_invalid(data)  # ocean / off-grid stays transparent
-    # Gouraud shading interpolates color smoothly between the 3 km grid points —
-    # the smooth "pro" look (like Pivotal), but ~15x faster than filled contours.
-    ax.pcolormesh(lon, lat, field, transform=ccrs.PlateCarree(),
+    # downsample the grid for rendering — far fewer triangles for gouraud to
+    # rasterize (the expensive part), smoothed back over the gaps by the shading.
+    d = data[::STRIDE, ::STRIDE]
+    la = lat[::STRIDE, ::STRIDE]
+    lo = lon[::STRIDE, ::STRIDE]
+    field = np.ma.masked_invalid(d)     # ocean / off-grid stays transparent
+    # Gouraud shading interpolates color smoothly between grid points — the smooth
+    # "pro" look (like Pivotal), without pcolormesh's hard cell squares.
+    ax.pcolormesh(lo, la, field, transform=ccrs.PlateCarree(),
                   cmap=cmap, norm=norm, shading="gouraud")
 
     fig.savefig(out_path, transparent=True, dpi=dpi,
