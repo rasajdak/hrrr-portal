@@ -149,17 +149,34 @@
   // ---- map + basemaps ----
   var map = L.map("map",{zoomControl:true,minZoom:3,maxZoom:10,worldCopyJump:false}).setView([39.5,-96],4);
   map.zoomControl.setPosition("topright");
+  // Keyless raster basemaps (Esri ArcGIS Online + OpenTopoMap). CARTO's
+  // basemaps.cartocdn.com tiles now watermark "API KEY REQUIRED", so every
+  // CARTO layer here was replaced with an unkeyed equivalent. Esri's Canvas
+  // and Street tiles stop at z16; the map caps at z10, so nothing overzooms.
+  var ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
+  function esri(path,opts){
+    var o = {maxZoom:19, maxNativeZoom:16, attribution:"© Esri"};
+    for(var k in (opts||{})) o[k]=opts[k];
+    return L.tileLayer(ESRI+path+"/MapServer/tile/{z}/{y}/{x}", o);
+  }
   var bases = {
-    dark: L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
-    light:L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
-    gray: L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
-    sat:  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"}),
-    streets:L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,attribution:"© OSM © CARTO"}),
-    topo: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"}),
+    dark: esri("Canvas/World_Dark_Gray_Base"),
+    light:esri("Canvas/World_Light_Gray_Base"),
+    gray: esri("Canvas/World_Light_Gray_Base"),
+    sat:  esri("World_Imagery",{maxNativeZoom:19}),
+    streets:esri("World_Street_Map"),
+    topo: esri("World_Topo_Map",{maxNativeZoom:19}),
     terrain:L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",{subdomains:"abc",maxZoom:17,attribution:"© OpenTopoMap (CC-BY-SA)"})
   };
+  // Transparent label/boundary overlays, added per basemap ("gray" stays bare,
+  // and streets/topo/terrain carry their own labels).
+  var refs = {
+    dark: esri("Canvas/World_Dark_Gray_Reference"),
+    light:esri("Canvas/World_Light_Gray_Reference"),
+    sat:  esri("Reference/World_Boundaries_and_Places")
+  };
   var curBase = bases.dark.addTo(map);
-  var labels = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19});
+  var curRef = refs.dark.addTo(map);
 
   // GOES-East (=GOES-19) GeoColor updates ~every 20 min with ~20 min latency;
   // step back 25 min and snap to the :00/:20/:40 grid so the frame exists.
@@ -363,9 +380,11 @@
   // ---- controls ----
   $("field").addEventListener("change",function(e){ setField(e.target.value); });
   $("basemap").addEventListener("change",function(e){
-    map.removeLayer(curBase); if(map.hasLayer(labels))map.removeLayer(labels);
-    curBase=bases[e.target.value].addTo(map); curBase.bringToBack();
-    if(e.target.value==="sat")labels.addTo(map);
+    var k=e.target.value;
+    map.removeLayer(curBase);
+    if(curRef){ map.removeLayer(curRef); curRef=null; }
+    curBase=bases[k].addTo(map); curBase.bringToBack();
+    if(refs[k]){ curRef=refs[k].addTo(map); curRef.bringToBack(); curBase.bringToBack(); }
   });
   $("opacity").addEventListener("input",function(e){ opacity=e.target.value/100;
     if(radarMode){ if(radarLayers[radarIdx]) radarLayers[radarIdx].setOpacity(opacity); }
