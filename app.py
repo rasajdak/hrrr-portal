@@ -6,6 +6,7 @@ Endpoints
   GET /api/config             -> fields, extent bounds, latest run guess
   GET /api/overlay            -> rendered field PNG (query: field, run, fxx)
   GET /api/legend?field=...   -> colorbar PNG for a field
+  GET /api/panel?lat=&lon=    -> every field a desk panel shows, in one object
 
 Run:  python app.py           (dev server on http://127.0.0.1:8000)
 """
@@ -18,6 +19,7 @@ from datetime import datetime, timezone
 from flask import Flask, request, send_file, jsonify, Response, send_from_directory
 
 import hrrr_render as hr
+import hrrr_panel
 
 # WAQI air-quality tile token — read from the environment so it never lives in
 # the repo or the client. Set on the server (systemd Environment=WAQI_TOKEN=...).
@@ -72,6 +74,32 @@ def point():
         return jsonify(error="sample failed: %s" % e), 502
     f = hr.FIELDS[field]
     return jsonify(field=field, fxx=fxx, value=val, unit=f["unit"], label=f["label"])
+
+
+@app.route("/api/panel")
+def panel():
+    """
+    The whole of a small screen's worth of forecast for one point.
+
+    A device with a display cannot sensibly make thirty calls to /api/point, so
+    this answers the lot at once and is cached per run and point. Pass wait=0 to
+    get a 202 rather than sit through a cold build.
+    """
+    try:
+        lat = float(request.args.get("lat"))
+        lon = float(request.args.get("lon"))
+    except (TypeError, ValueError):
+        return jsonify(error="lat and lon are required"), 400
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return jsonify(error="lat/lon out of range"), 400
+
+    wait = request.args.get("wait", "1") != "0"
+    try:
+        payload, status = hrrr_panel.get(lat, lon, wait=wait)
+    except Exception as e:
+        app.logger.error("panel failed: %s\n%s", e, traceback.format_exc())
+        return jsonify(error="panel failed: %s" % e), 502
+    return jsonify(payload), status
 
 
 @app.route("/api/overlay")
