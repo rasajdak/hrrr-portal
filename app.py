@@ -99,7 +99,14 @@ def panel():
     except Exception as e:
         app.logger.error("panel failed: %s\n%s", e, traceback.format_exc())
         return jsonify(error="panel failed: %s" % e), 502
-    return jsonify(payload), status
+
+    resp = jsonify(payload)
+    # Read-only public forecast numbers, and the things that want them live on
+    # other hosts: the lake panel page is served from ryansajdak.com and the
+    # ESP32 panel is not a browser at all. Nothing here is user-specific and
+    # nothing is written, so there is nothing for an origin check to protect.
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, status
 
 
 @app.route("/api/overlay")
