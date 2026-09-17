@@ -226,6 +226,18 @@ def get(lat, lon, wait=True):
     if hit is not None:
         hit["age"] = int(time.time()) - hit.get("built", 0)
         hit["current"] = True
+        # A cached panel keeps the forecast hour it was built for, and "now"
+        # moves on without it. Build the 19Z run at 20:05Z and it holds hour 1
+        # forever, so by 21:05Z the headline reading is an hour old while the
+        # run is still the newest one posted and nothing looks wrong. Normally a
+        # new run lands every hour and rebuilds it, but when AWS is late that is
+        # exactly when it is not happening. So rebuild on the hour drifting too,
+        # not just on a new run, and say which hour these numbers are for.
+        want = now_fxx(run_dt)
+        have = (hit.get("now") or {}).get("fxx")
+        if have is not None and have != want:
+            hit["hour_drift"] = want - have
+            _start_background(run_dt, lat, lon)
         return hit, 200
 
     # Nothing for this run. An older run for the same point is worth serving
