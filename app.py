@@ -169,6 +169,19 @@ _HOP = {"host", "content-length", "transfer-encoding", "connection",
         "user-agent", "accept-encoding", "keep-alive", "expect"}
 
 
+@app.route("/api/purpleair", methods=["GET"])
+def purpleair_about():
+    # School web filters (WNYRIC) fetch a URL themselves before deciding to let
+    # a device reach it. Give them a plain, obviously educational page.
+    return Response(
+        "<!doctype html><title>Pelion Field Station data relay</title>"
+        "<h1>Pelion Field Station air quality data relay</h1>"
+        "<p>City Honors School, Buffalo Public Schools. Student environmental science "
+        "monitoring: PurpleAir air quality sensors report here, and readings are published at "
+        '<a href="https://mrsajdak.com/pelionscience/#air">mrsajdak.com/pelionscience</a>.</p>',
+        mimetype="text/html")
+
+
 @app.route("/api/purpleair", methods=["POST"])
 def purpleair_relay():
     body = request.get_data(cache=False)
