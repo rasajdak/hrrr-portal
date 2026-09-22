@@ -7,12 +7,14 @@ Endpoints
   GET /api/overlay            -> rendered field PNG (query: field, run, fxx)
   GET /api/legend?field=...   -> colorbar PNG for a field
   GET /api/panel?lat=&lon=    -> every field a desk panel shows, in one object
+  POST /api/purpleair?key=    -> relay a PurpleAir Data Processor push to Pelion
 
 Run:  python app.py           (dev server on http://127.0.0.1:8000)
 """
 
 import os
 import traceback
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -152,6 +154,39 @@ def aqi_tile(z, x, y):
         return jsonify(error="aqi fetch failed"), 502
     return Response(data, mimetype=ctype,
                     headers={"Cache-Control": "public, max-age=600"})
+
+
+# PurpleAir Data Processor relay for the Pelion Field Station air API.
+#
+# PurpleAir sensors POST their reading with Transfer-Encoding: chunked, and the
+# mrsajdak.com host (Bluehost) runs ModSecurity that answers every chunked
+# request with a 406, with no cPanel switch to turn it off. nginx here buffers
+# the chunked body, so by the time Flask sees it it is a plain byte string,
+# which we pass on with a Content-Length. The key rides through untouched in
+# the query string and in whatever header PurpleAir's "API Key" field uses.
+PELION_AIR = "https://mrsajdak.com/pelionscience/api/air.php"
+_HOP = {"host", "content-length", "transfer-encoding", "connection",
+        "user-agent", "accept-encoding", "keep-alive", "expect"}
+
+
+@app.route("/api/purpleair", methods=["POST"])
+def purpleair_relay():
+    body = request.get_data(cache=False)
+    if not body:
+        return jsonify(error="empty body"), 400
+    url = PELION_AIR + ("?" + request.query_string.decode() if request.query_string else "")
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
+    headers["User-Agent"] = "pelion-purpleair-relay"
+    headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return Response(r.read(), status=r.status, mimetype="application/json")
+    except urllib.error.HTTPError as e:
+        return Response(e.read(), status=e.code, mimetype="application/json")
+    except Exception as e:
+        app.logger.error("purpleair relay failed: %s", e)
+        return jsonify(error="relay failed"), 502
 
 
 if __name__ == "__main__":
