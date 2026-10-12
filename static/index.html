@@ -153,6 +153,10 @@
 <div id="share">
   <div id="sharehead">
     <div class="group"><label>Region</label><select id="region"></select></div>
+    <div class="group"><label for="shape">Shape</label>
+      <select id="shape" title="The sheet the map is drawn on: landscape, square for a feed, or vertical for a story or reel">
+        <option value="wide">Landscape</option><option value="square">Square 1:1</option><option value="tall">Vertical 9:16</option>
+      </select></div>
     <label class="check" title="Step and play through only the hours that are already drawn. A dot marks a field, region or hour that is ready."><input type="checkbox" id="readyonly" checked /> Ready maps only <span id="readycount"></span></label>
     <span class="sp"></span>
     <button id="sharesave" title="Keep this map on the server at a link that never expires">Save to server</button>
@@ -569,10 +573,13 @@
   function updateMeteoCursor(){ if(series) drawMeteo(); }
 
   // ---- static map view ----
-  var REGION="conus", shareBusy=false, shareTok=0;
+  var REGION="conus", SHAPE="wide", shareBusy=false, shareTok=0;
+  try{ SHAPE=localStorage.getItem("mapshape")||"wide"; }catch(e){}
+  if(["wide","square","tall"].indexOf(SHAPE)<0) SHAPE="wide";
   try{ REGION=localStorage.getItem("region")||"conus"; }catch(e){}
   function mapQuery(){
-    return "model="+MODEL+"&field="+encodeURIComponent(field)+"&run="+run+"&fxx="+fxx+"&region="+REGION;
+    return "model="+MODEL+"&field="+encodeURIComponent(field)+"&run="+run+"&fxx="+fxx+"&region="+REGION+
+           (SHAPE==="wide"?"":"&shape="+SHAPE);
   }
   function drawShare(){
     var q=mapQuery(), url="/api/map?"+q+"&rv="+CFG.render_rev, img=$("shareimg"), msg=$("sharemsg"), tok=++shareTok;
@@ -638,7 +645,8 @@
   var READY={};
   function readyHours(f,r){ var a=READY[f===undefined?field:f]; return (a&&a[r===undefined?REGION:r])||[]; }
   function onlyReady(){              // the hours to keep to, or null when not restricting
-    if(MODE!=="static"||!$("readyonly").checked) return null;
+    // only the landscape sheet is drawn ahead; the other shapes draw as asked
+    if(MODE!=="static"||!$("readyonly").checked||SHAPE!=="wide") return null;
     var h=readyHours(); return h.length?h:null;
   }
   // pickRun: let the server choose the newest run whose maps are drawn, which
@@ -657,6 +665,7 @@
     }).catch(function(){});
   }
   function noteReady(q){
+    if(q.indexOf("&shape=")>=0) return;                // the ready list is of landscape sheets
     var p={}; q.split("&").forEach(function(kv){ var i=kv.indexOf("="); p[kv.slice(0,i)]=decodeURIComponent(kv.slice(i+1)); });
     if(p.model!==MODEL||p.run!==run) return;
     var a=(READY[p.field]=READY[p.field]||{}), h=(a[p.region]=a[p.region]||[]), n=+p.fxx;
@@ -720,6 +729,12 @@
       if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(function(){ back("Saved, link copied"); },function(){ back("Saved"); });
       else back("Saved");
     }).catch(function(){ back("Could not save"); });
+  });
+  $("shape").value=SHAPE;
+  $("shape").addEventListener("change",function(e){
+    SHAPE=e.target.value;
+    try{ localStorage.setItem("mapshape",SHAPE); }catch(err){}
+    showReady(); drawShare();
   });
   $("sharecopy").addEventListener("click",function(){
     var url=location.origin+"/share?"+mapQuery(), b=$("sharecopy");

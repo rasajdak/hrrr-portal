@@ -1083,6 +1083,19 @@ def _road_shapes(w, e, s, n, major_only):
             if x1 > w and x0 < e and y1 > s and y0 < n]
 _MAP_AX = [0.0, 0.072, 1.0, 0.838]          # the map itself, as a figure fraction
 
+# The same map in other shapes, for where it is going to be posted. Each is a
+# sheet size in pixels (at MAP_DPI) and where the map sits on it. A shape other
+# than wide frames the region differently, so it is a region key of its own
+# inside ('wny@sq', 'wny@pt'), with its own basemap and relief.
+#   square : 1:1, for a feed. Laid out like the wide sheet.
+#   tall   : 9:16, for a story or reel. Dark bands top and bottom, like the
+#            animated loop's, with the text set from the left.
+SHAPES = {
+    "wide":   dict(w=MAP_W, h=MAP_H, ax=_MAP_AX, key=""),
+    "square": dict(w=2160, h=2160, ax=[0.0, 0.064, 1.0, 0.868], key="@sq"),
+    "tall":   dict(w=1620, h=2880, ax=[0.0, 0.144, 1.0, 0.712], key="@pt"),
+}
+
 
 def region_catalog():
     return [dict(key=k, label=r["label"]) for k, r in REGIONS.items()]
@@ -1181,22 +1194,24 @@ def _upsample(a, k):
             + top[:, x0 + 1] * (1 - fy) * fx + bot[:, x0 + 1] * fy * fx)
 
 
-def map_path(model, field_key, run_dt, fxx, region):
+def map_path(model, field_key, run_dt, fxx, region, shape="wide"):
     """Where a static map lives in the cache, drawn or not."""
     return _cache_path("map", MAP_REV, model, field_key, run_dt.strftime("%Y%m%d%H"),
-                       "%03d" % fxx, region)
+                       "%03d" % fxx, region + SHAPES[shape]["key"])
 
 
-def render_map(field_key, run_dt, fxx, region="conus", model="hrrr"):
+def render_map(field_key, run_dt, fxx, region="conus", model="hrrr", shape="wide"):
     """Path to a cached static map PNG, drawing it if need be."""
     if region not in REGIONS:
         raise ValueError("unknown region %r" % region)
+    if shape not in SHAPES:
+        raise ValueError("shape is one of %s" % ", ".join(SHAPES))
     spec(field_key, model)
-    out_path = map_path(model, field_key, run_dt, fxx, region)
+    out_path = map_path(model, field_key, run_dt, fxx, region, shape)
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         return out_path
     f, data, lat, lon = _field(field_key, model, run_dt, fxx)
-    _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region)
+    _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape)
     return out_path
 
 
@@ -1256,7 +1271,7 @@ def _basemap(region, proj, x0, x1, y0, y1):
         return _BASE[region]
     import pickle
     path = os.path.join(CACHE_DIR, "geo", "base_%s_%s%s.pkl" % (
-        region, BASE_REV, TALL_TAG if region_parts(region)[1] else ""))
+        region, BASE_REV, _framing(region)[0]))
     if os.path.exists(path):
         try:
             with open(path, "rb") as fh:
@@ -1318,16 +1333,33 @@ TALL = float(TALL_W) / TALL_H
 TALL_TAG = "_v3"           # in cache names of upright layers; bump when this frame changes
 
 
+# how a region key may be framed, and what marks its cached layers (bump a mark
+# when that frame changes)
+FRAMINGS = {"": "", "tall": TALL_TAG, "sq": "_s1", "pt": "_p1"}
+
+
 def region_parts(region):
     """
     ('wny', False) for 'wny', ('wny', True) for 'wny@tall': the same region
     framed upright for a phone, which the animated loop offers for reels.
+    'wny@sq' and 'wny@pt' are the static maps' square and upright framings.
     Raises ValueError for a region that does not exist.
     """
     base, _, how = region.partition("@")
-    if base not in REGIONS or how not in ("", "tall"):
+    if base not in REGIONS or how not in FRAMINGS:
         raise ValueError("unknown region %r" % region)
     return base, how == "tall"
+
+
+def _framing(region):
+    """(mark for cache names, map aspect or None for the wide frame)."""
+    how = region.partition("@")[2]
+    if how == "tall":
+        return FRAMINGS[how], TALL
+    for sh in SHAPES.values():
+        if sh["key"] == "@" + how and how:
+            return FRAMINGS[how], (sh["w"] * sh["ax"][2]) / (sh["h"] * sh["ax"][3])
+    return "", None
 
 
 @_locked
@@ -1339,7 +1371,8 @@ def frame(region):
     animated loop draws into this same frame, which is why its layers line up
     with the static maps'.
     """
-    base, tall = region_parts(region)
+    base, _ = region_parts(region)
+    aspect = _framing(region)[1]
     w, e, s, n = REGIONS[base]["box"]
     pc = ccrs.PlateCarree()
     proj = ccrs.LambertConformal(
@@ -1350,14 +1383,14 @@ def frame(region):
     edge_lat = np.concatenate([np.full(40, s), np.full(40, n), s + (n - s) * t, s + (n - s) * t])
     pts = proj.transform_points(pc, edge_lon, edge_lat)
     x0, x1, y0, y1 = pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max()
-    if tall:
-        # An upright frame cannot hold a region that is wider than it is tall.
-        # Keep most of the width, or about twice the height, whichever asks for
+    if aspect:
+        # A frame squarer or taller than the region cannot hold all of it. Keep
+        # most of the width, or about twice the height, whichever asks for
         # less, and centre it: the sides are trimmed and the map runs further
         # north and south than the landscape one.
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        h = min(0.85 * (x1 - x0) / TALL, 1.9 * (y1 - y0))
-        return proj, cx - h * TALL / 2, cx + h * TALL / 2, cy - h / 2, cy + h / 2
+        h = min(0.85 * (x1 - x0) / aspect, 1.9 * (y1 - y0))
+        return proj, cx - h * aspect / 2, cx + h * aspect / 2, cy - h / 2, cy + h / 2
     want = (MAP_W * _MAP_AX[2]) / (MAP_H * _MAP_AX[3])
     if (x1 - x0) / (y1 - y0) < want:
         grow = (y1 - y0) * want - (x1 - x0)
@@ -1385,7 +1418,7 @@ def city_labels(region, limit=22):
     for rank, ((name, _, _), (cx, cy, _)) in enumerate(zip(CITIES, cxy)):
         if not (x0 + mx < cx < x1 - mx and y0 + my < cy < y1 - my):
             continue
-        if any(abs(cx - k[1]) < gap and abs(cy - k[2]) < gap * 0.6 for k in kept):
+        if any(abs(cx - k[1]) < gap and abs(cy - k[2]) < gap * 0.75 for k in kept):
             continue
         if len(kept) >= limit:
             break
@@ -1413,11 +1446,14 @@ def water_labels(region, cities):
 
 
 @_locked
-def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
+def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wide"):
 
     reg = REGIONS[region]
     w, e, s, n = reg["box"]
     pc = ccrs.PlateCarree()
+    sheet = SHAPES[shape]
+    region += sheet["key"]                    # the region as this shape frames it
+    dark = shape == "tall"                    # bands like the loop's, light text
     proj, x0, x1, y0, y1 = frame(region)
 
     # Project the grid ourselves and hand matplotlib plain x/y: quicker than
@@ -1434,8 +1470,9 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     stride = max(1, int(math.ceil(max(vals.shape) / 1100.0)))
 
     cmap, norm = _cmap_norm(f)
-    fig = plt.figure(figsize=(MAP_W / MAP_DPI, MAP_H / MAP_DPI), dpi=MAP_DPI, facecolor="white")
-    ax = fig.add_axes(_MAP_AX, projection=proj)
+    paper = "#0f1723" if dark else "white"
+    fig = plt.figure(figsize=(sheet["w"] / MAP_DPI, sheet["h"] / MAP_DPI), dpi=MAP_DPI, facecolor=paper)
+    ax = fig.add_axes(sheet["ax"], projection=proj)
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
     ax.set_facecolor(WATER)                           # open water
@@ -1464,7 +1501,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     # county-scale map and a national one come out equally soft: a Gaussian of
     # about 9 px, and never less than 1.5 cells. The printed city values and
     # the maximum stay raw.
-    px_per_cell = MAP_W * (gx.max() - gx.min()) / (x1 - x0) / max(sv.shape[1], 1)
+    px_per_cell = sheet["w"] * (gx.max() - gx.min()) / (x1 - x0) / max(sv.shape[1], 1)
     sigma = max(1.5, 9.0 / max(px_per_cell, 0.1))
     passes = int(min(14, round(1.5 * sigma * sigma)))
     bands = _bands(f)
@@ -1546,27 +1583,54 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     m = MODELS[model]
     plain = f.get("cats") or f.get("radar_ptype")      # no unit, no single number
     unit = "" if plain else " (%s)" % f["unit"]
-    fig.text(0.011, 0.985, "%s  ·  %s%s" % (m["name"], f["label"], unit), fontfamily=TITLE_FONT,
-             fontsize=26, fontweight="semibold", color="#111", va="top", ha="left")
-    fig.text(0.011, 0.940, _when(run_dt, fxx, reg["tz"]),
-             fontsize=13, fontweight="medium", color="#3a4048", va="top", ha="left")
-    fig.text(0.989, 0.983, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=19,
-             fontweight="semibold", color="#111", va="top", ha="right")
     seen = vals[inview[sl]] if inview[sl].shape == vals.shape else vals
     seen = seen[np.isfinite(seen)]
-    if seen.size and not plain:
-        fig.text(0.989, 0.940, "Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"]),
-                 fontsize=13, fontweight="medium", color="#3a4048", va="top", ha="right")
+    peak = "Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"]) if seen.size and not plain else ""
+    if dark:
+        # Two bands of equal height, text from the left, the same space above
+        # the text as below it: the arrangement settled on for the loop's reel.
+        valid = run_dt + timedelta(hours=fxx)
+        L, top = 0.034, 1.0 - 0.144
+        fig.text(L, top + 0.113, m["name"].upper(), fontfamily=TITLE_FONT, fontsize=19,
+                 fontweight="semibold", color="#b9c8da", va="center", ha="left")
+        fig.text(L, top + 0.080, "%s%s" % (f["label"], unit), fontfamily=TITLE_FONT, fontsize=32,
+                 fontweight="semibold", color="white", va="center", ha="left")
+        fig.text(L, top + 0.036, _clock(valid, reg["tz"]), fontfamily=TITLE_FONT, fontsize=36,
+                 fontweight="semibold", color="#4ea3ff", va="center", ha="left")
+        fig.text(1 - L, top + 0.113, "hour %d of the %s run" % (fxx, _clock(run_dt, reg["tz"])),
+                 fontsize=11.5, fontweight="medium", color="#8ea3bd", va="center", ha="right")
+        cax = fig.add_axes([L, 0.092, 1 - 2 * L, 0.013])
+        _colorbar(f, cax, "#dfe8f3", "#33465e", 11)
+        fig.text(L, 0.118, peak or ("" if plain else f["unit"]), fontsize=11.5, fontweight="medium",
+                 color="#b9c8da", va="center", ha="left")
+        fig.text(L, 0.040, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=27,
+                 fontweight="semibold", color="white", va="center", ha="left")
+        fig.text(1 - L, 0.040, "Data: %s" % credit(model), fontsize=10.5,
+                 color="#8ea3bd", va="center", ha="right")
+    else:
+        k = 1.0 if shape == "wide" else 0.94          # the square sheet is a little narrower
+        fig.text(0.011, 0.985, "%s  ·  %s%s" % (m["name"], f["label"], unit), fontfamily=TITLE_FONT,
+                 fontsize=26 * k, fontweight="semibold", color="#111", va="top", ha="left")
+        sub = 0.940 if shape == "wide" else 0.951
+        fig.text(0.011, sub, _when(run_dt, fxx, reg["tz"]),
+                 fontsize=13 * k, fontweight="medium", color="#3a4048", va="top", ha="left")
+        fig.text(0.989, 0.983, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=19,
+                 fontweight="semibold", color="#111", va="top", ha="right")
+        if peak:
+            fig.text(0.989, sub, peak, fontsize=13 * k, fontweight="medium", color="#3a4048",
+                     va="top", ha="right")
 
-    # ---- colorbar ----
-    cax = fig.add_axes([0.2, 0.036, 0.6, 0.018])
-    _colorbar(f, cax, "#222", "#444", 11.5)
-    if not plain:
-        fig.text(0.192, 0.045, f["unit"], fontsize=12, fontweight="medium", color="#222", va="center", ha="right")
-    fig.text(0.989, 0.014, "Data: %s" % credit(model), fontsize=9.5,
-             color="#666", va="bottom", ha="right")
+        # ---- colorbar ----
+        cy = 0.036 if shape == "wide" else 0.034
+        cax = fig.add_axes([0.2, cy, 0.6, 0.018 if shape == "wide" else 0.012])
+        _colorbar(f, cax, "#222", "#444", 11.5)
+        if not plain:
+            fig.text(0.192, cy + 0.009 if shape == "wide" else cy + 0.006, f["unit"], fontsize=12,
+                     fontweight="medium", color="#222", va="center", ha="right")
+        fig.text(0.989, 0.014 if shape == "wide" else 0.008, "Data: %s" % credit(model), fontsize=9.5,
+                 color="#666", va="bottom", ha="right")
 
     tmp = part_name(out_path)
-    fig.savefig(tmp, format="png", dpi=MAP_DPI, facecolor="white")
+    fig.savefig(tmp, format="png", dpi=MAP_DPI, facecolor=paper)
     plt.close(fig)
     os.replace(tmp, out_path)

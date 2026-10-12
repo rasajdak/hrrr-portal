@@ -143,6 +143,14 @@ sudo certbot --nginx -d your.domain
 
 Then browse to the droplet's IP (or domain). Logs: `journalctl -u hrrr-portal -f`.
 
+### Shapes
+`/api/map` takes `shape=wide` (the default, 2400 x 1500), `square` (2160 x 2160,
+for a feed) or `tall` (1620 x 2880, 9:16, for a story or reel). Each frames the
+region to suit (`SHAPES`): the square and tall sheets trim the sides and run
+further north and south. The tall sheet uses the loop's reel layout, dark bands
+top and bottom with the text set from the left. Only the wide sheet is drawn
+ahead; the others draw when asked.
+
 ## The animated loop
 `/loop` is a futurecast: radar by precipitation type, in motion over the same
 terrain base as the static maps. The server does not draw it. `loop.py` hands

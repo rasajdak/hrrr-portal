@@ -5,7 +5,7 @@ Endpoints
   GET /                        -> static/index.html
   GET /api/config?model=      -> models, that model's fields and newest run, regions
   GET /api/overlay            -> rendered field PNG (query: model, field, run, fxx)
-  GET /api/map                -> finished static map PNG (adds: region)
+  GET /api/map                -> finished static map PNG (adds: region, shape)
   GET /api/ready?model=&run=  -> which static maps of that run are already drawn
   GET /api/runs?model=        -> recent runs, newest first, for the run picker
   POST /api/save              -> keep one static map for good, under /saved/
@@ -159,6 +159,13 @@ def overlay():
     return resp
 
 
+def _shape():
+    shape = request.args.get("shape", "wide")
+    if shape not in hr.SHAPES:
+        raise ValueError("shape is one of %s" % ", ".join(hr.SHAPES))
+    return shape
+
+
 def _map_args():
     """(model, field, run, fxx, region) for the static map routes."""
     model = _model()
@@ -278,13 +285,15 @@ def static_map():
     """A finished map: borders, title, city values, colorbar. Made to be posted."""
     try:
         model, field, run, fxx, region = _map_args()
-        path = hr.render_map(field, run, fxx, region, model)
+        shape = _shape()
+        path = hr.render_map(field, run, fxx, region, model, shape)
     except ValueError as e:
         return jsonify(error=str(e)), 400
     except Exception as e:
         app.logger.error("map failed: %s\n%s", e, traceback.format_exc())
         return jsonify(error="render failed: %s" % e), 502
-    name = "%s_%s_%s_f%03d_%s.png" % (model, field, run.strftime("%Y%m%d%H"), fxx, region)
+    name = "%s_%s_%s_f%03d_%s%s.png" % (model, field, run.strftime("%Y%m%d%H"), fxx, region,
+                                        "" if shape == "wide" else "_" + shape)
     resp = send_file(path, mimetype="image/png", max_age=86400,
                      as_attachment=request.args.get("dl") == "1", download_name=name)
     return resp
@@ -295,21 +304,23 @@ def static_map():
 # its URL then never changes or expires.
 SAVED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved")
 SAVED_MAX = 500
-_SAVED_NAME = re.compile(r"^([a-z]+)_([a-z0-9_]+)_(\d{10})_f(\d{3})_([a-z]+)\.png$")
+_SAVED_NAME = re.compile(r"^([a-z]+)_([a-z0-9_]+)_(\d{10})_f(\d{3})_([a-z]+?)(?:_(square|tall))?\.png$")
 
 
 @app.route("/api/save", methods=["POST"])
 def save_map():
     try:
         model, field, run, fxx, region = _map_args()
-        path = hr.render_map(field, run, fxx, region, model)
+        shape = _shape()
+        path = hr.render_map(field, run, fxx, region, model, shape)
     except ValueError as e:
         return jsonify(error=str(e)), 400
     except Exception as e:
         app.logger.error("save failed: %s\n%s", e, traceback.format_exc())
         return jsonify(error="render failed: %s" % e), 502
     os.makedirs(SAVED_DIR, exist_ok=True)
-    name = "%s_%s_%s_f%03d_%s.png" % (model, field, run.strftime("%Y%m%d%H"), fxx, region)
+    name = "%s_%s_%s_f%03d_%s%s.png" % (model, field, run.strftime("%Y%m%d%H"), fxx, region,
+                                        "" if shape == "wide" else "_" + shape)
     dest = os.path.join(SAVED_DIR, name)
     if not os.path.exists(dest):
         # anyone can press Save, so the shelf has an end
@@ -335,7 +346,7 @@ def saved_index():
         names = [n for n in os.listdir(SAVED_DIR) if _SAVED_NAME.match(n)]
         names.sort(key=lambda n: os.path.getmtime(os.path.join(SAVED_DIR, n)), reverse=True)
         for n in names:
-            model, field, run, fxx, region = _SAVED_NAME.match(n).groups()
+            model, field, run, fxx, region, _shape_ = _SAVED_NAME.match(n).groups()
             try:
                 what = "%s %s, %s" % (hr.MODELS[model]["name"], hr.spec(field, model)["label"],
                                       hr.REGIONS[region]["label"])
@@ -378,8 +389,11 @@ def share():
             raise ValueError("unknown region %r" % region)
     except ValueError as e:
         return jsonify(error=str(e)), 400
-    q = "model=%s&field=%s&run=%s&fxx=%d&region=%s" % (
-        model, field, run.strftime("%Y%m%d%H"), fxx, region)
+    shape = request.args.get("shape", "wide")
+    if shape not in hr.SHAPES:
+        shape = "wide"
+    q = "model=%s&field=%s&run=%s&fxx=%d&region=%s%s" % (
+        model, field, run.strftime("%Y%m%d%H"), fxx, region, "" if shape == "wide" else "&shape=" + shape)
     root = request.url_root.replace("http://", "https://")
     img = "%sapi/map?%s" % (root, q)
     title = escape("%s %s, %s" % (hr.MODELS[model]["name"], f["label"],
@@ -402,7 +416,7 @@ def share():
         "p{font-size:14px;margin:14px}a{color:#4ea3ff}</style>"
         "<img src='%(i)s' alt='%(t)s'>"
         "<p>%(d)s</p><p><a href='https://ryansajdak.com/'>ryansajdak.com</a></p></html>"
-        % dict(t=title, d=desc, i=escape(img), w=hr.MAP_W, h=hr.MAP_H),
+        % dict(t=title, d=desc, i=escape(img), w=hr.SHAPES[shape]["w"], h=hr.SHAPES[shape]["h"]),
         mimetype="text/html")
 
 
