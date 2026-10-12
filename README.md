@@ -144,8 +144,8 @@ sudo certbot --nginx -d your.domain
 Then browse to the droplet's IP (or domain). Logs: `journalctl -u hrrr-portal -f`.
 
 ### Maps drawn ahead of time
-`prewarm.py` draws the static maps listed in its `PLAN` (model, fields, regions,
-every frame) as soon as a model posts a new run, so the page opens them
+`prewarm.py` draws the static maps listed in its `PLAN` (per model: totals at a
+few quoted hours, moving fields at a coarse step, for the regions in `AREAS`) as soon as a model posts a new run, so the page opens them
 instantly. A systemd timer runs one pass every 10 minutes at low priority; a
 pass skips maps that exist, stops after 8 minutes, and deletes cached frames
 older than 18 hours (and draws nothing if the disk is under 6 GB free). Edit `PLAN` to change the set; it is CPU on a one-core box.

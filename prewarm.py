@@ -20,18 +20,25 @@ import time
 
 import hrrr_render as hr
 
-# model -> (fields, regions). Frames are all of the model's. This set is about
-# 17,900 maps a day: 10,900 of them HRRR, because it comes round every hour (one
-# HRRR field across these four regions is 1,824 maps a day). At 1.2 to 2.3 s a
-# map that is 6 to 11 hours of the one core, which is about what it can give.
-# Left out to fit: per-frame snowfall, HRRR freezing rain, GFS radar.
+# What is drawn ahead, for these regions. Not every frame: drawing all of them
+# was about 17,900 maps a day, and at the 3.4 s a map the droplet managed with
+# temperature and gusts in the set, more than its one core has.
+#   TOTALS : accumulations, drawn only at the hours a total gets quoted for
+#   LOOPS  : fields that move, drawn at a coarser step than the model's own
+# This comes to about 6,500 maps a day. Anything else still draws on request.
 AREAS = ["wny", "newyork", "northeast", "conus"]
-PLAN = [
-    ("hrrr",  ["refc", "apcp_tot", "asnow", "ptype", "t2m", "gust"],    AREAS),
-    ("nam",   ["refc", "apcp_tot", "snow10", "ptype", "t2m", "gust"],   AREAS),
-    ("gfs",   ["apcp_tot", "snow10", "ptype", "t2m", "gust"],           AREAS),
-    ("ecmwf", ["apcp_tot", "snow10", "ptype", "t2m", "gust"],           AREAS),
-]
+LONG = [24, 48, 72, 120, 168, 240]
+#          totals at these hours                 loop fields, every N h, out to
+PLAN = {
+    "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18],
+                  loops=["refc", "ptype", "t2m", "gust"], every=3, to=18),
+    "nam":   dict(totals=["apcp_tot", "snow10"], at=[24, 48, 60],
+                  loops=["refc", "ptype", "t2m", "gust"], every=3, to=60),
+    "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG,
+                  loops=["ptype", "t2m", "gust"], every=6, to=120),
+    "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG,
+                  loops=["ptype", "t2m", "gust"], every=6, to=120),
+}
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
 # Cached frames older than this are deleted. The set above writes roughly 20 GB
@@ -43,15 +50,16 @@ MIN_FREE_GB = 6          # below this, prune only and draw nothing
 
 def jobs():
     """(model, run, field, fxx, region), newest need first: HRRR, then the rest."""
-    for model, fields, regions in PLAN:
-        m = hr.MODELS[model]
+    for model, p in PLAN.items():
         run = hr.latest_available_run(model)
-        for field in fields:
-            first = hr.spec(field, model)["min_fxx"]
-            for fxx in range(first, m["max_fxx"] + 1, m["step"]):
-                # regions innermost: they share the one download of this frame
-                for region in regions:
-                    yield model, run, field, fxx, region
+        frames = [(f, h) for f in p["totals"] for h in p["at"]]
+        frames += [(f, h) for f in p["loops"] for h in range(0, p["to"] + 1, p["every"])]
+        for field, fxx in frames:
+            if fxx < hr.spec(field, model)["min_fxx"]:
+                continue
+            # regions innermost: they share the one download of this frame
+            for region in AREAS:
+                yield model, run, field, fxx, region
 
 
 def prune():
