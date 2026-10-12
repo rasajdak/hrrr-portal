@@ -156,6 +156,13 @@ QPF_COLORS = ["#c7f0b8", "#7fd67a", "#33a84a", "#1a7a3a", "#2b6fc4", "#58a8f0",
 ICE_LEVELS = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0]
 ICE_COLORS = ["#f9d5e5", "#f4a6c6", "#ec6fa6", "#d6398a", "#a61e7a", "#6d1466",
               "#3d0c4a"]
+# Radar by precipitation type: one intensity scale, three colour families.
+# Six steps of reflectivity each for rain, wintry mix and snow, light to heavy.
+RP_LEVELS = [5, 15, 25, 35, 45, 55]
+RP_GROUPS = ["Rain", "Mix", "Snow"]
+RP_COLORS = ["#a8e6a1", "#5cc35a", "#1f9a36", "#f2e03a", "#f08c1e", "#d7261e",
+             "#f9cdd8", "#f3a0b8", "#e86a95", "#d13d78", "#a81f66", "#7a124f",
+             "#dfe4fb", "#b9c3f5", "#8e9cec", "#5f6fdc", "#3a45c0", "#262a8f"]
 PTYPE_CATS = ["Rain", "Freezing rain", "Sleet or mix", "Snow"]
 PTYPE_COLORS = ["#3fae49", "#f06292", "#9c5fd1", "#3d8bfd"]
 
@@ -202,6 +209,11 @@ FIELDS = {
     # ---- radar & storms -------------------------------------------------
     "refc": dict(group="Radar & storms", label="Composite reflectivity", unit="dBZ",
         product="sfc", search=":REFC:", conv=None, cmap="_nws", vmin=5, vmax=75),
+    # composite reflectivity for how hard, the type flags for what: the picture
+    # a TV "futurecast" shows. Fetched as group * 100 + dBZ (see _radar_ptype).
+    "refc_ptype": dict(group="Radar & storms", label="Radar by precipitation type", unit="dBZ",
+        product="sfc", radar_ptype=True, search=":REFC:", conv=None, vmin=5, vmax=75,
+        mask_under=True),
     "refd1": dict(group="Radar & storms", label="Reflectivity (1 km AGL)", unit="dBZ",
         product="sfc", search=":REFD:1000 m above ground:", conv=None, cmap="_nws", vmin=5, vmax=75),
     "maxref": dict(group="Radar & storms", label="Max 1 km reflectivity, past {step} h", unit="dBZ",
@@ -396,6 +408,8 @@ ECMWF = {
     "snow_step": dict(search=":sfc:sf:", diff=True, conv=M_SWE2SNOW),
     "swe": dict(search=":sfc:sd:", conv=M2IN),
     "ptype": dict(search=":sfc:ptype:", ptype="wmo"),
+    # no radar field: intensity comes from the precipitation rate instead
+    "refc_ptype": dict(search=":sfc:tprate:"),
     "h500": dict(search=":pl:gh:500:"),
     "t850": dict(search=":pl:t:850:"),
     "t500": dict(search=":pl:t:500:"),
@@ -673,8 +687,40 @@ def _prune(max_age=36 * 3600):
                 pass
 
 
+def _radar_ptype(model, run_dt, fxx):
+    """
+    Reflectivity and precipitation type in one array: group * 100 + dBZ, where
+    group is 0 rain, 1 wintry mix, 2 snow, and cells under 5 dBZ are missing.
+    Echo with no type flagged (it is not reaching the ground, or the model
+    simply did not say) is called snow where it is freezing at 2 m, else rain.
+    """
+    url = _grib_url(model, "sfc", run_dt, fxx)
+    if model == "ecmwf":
+        # Marshall-Palmer, Z = 200 R^1.6, turns a rain rate into a radar echo
+        rate = _one(model, url, ":sfc:tprate:")[0][0] * 3600.0
+        dbz = 10.0 * np.log10(200.0 * np.maximum(rate, 1e-4) ** 1.6)
+    else:
+        dbz = _one(model, url, ":REFC:")[0][0]
+    kind, lat, lon = _fetch(spec("ptype", model), model, run_dt, fxx)
+    t2m = _one(model, url, spec("t2m", model)["search"])[0][0]
+    group = np.where(kind == 4, 2.0, np.where((kind == 2) | (kind == 3), 1.0, 0.0))
+    group = np.where((kind == 0) & (t2m < 273.65), 2.0, group)
+    code = group * 100.0 + np.clip(dbz, 0, 99)
+    return np.where(np.isfinite(dbz) & (dbz >= RP_LEVELS[0]), code, np.nan).astype("float32"), lat, lon
+
+
+def _rp_index(dbz, group):
+    """Colour index into RP_COLORS (group * 6 + intensity step); NaN under 5 dBZ."""
+    step = np.digitize(np.nan_to_num(dbz), RP_LEVELS) - 1
+    out = np.asarray(group, dtype="float32") * len(RP_LEVELS) + step
+    out[(step < 0) | ~np.isfinite(dbz)] = np.nan
+    return out
+
+
 def _fetch(f, model, run_dt, fxx):
     """(data, lat, lon) for a field spec, raw units, on the model's grid."""
+    if f.get("radar_ptype"):
+        return _radar_ptype(model, run_dt, fxx)
     if f.get("accum"):
         return _accumulate(f, model, run_dt, fxx)
     url = _grib_url(model, f.get("product", "sfc"), run_dt, fxx)
@@ -779,6 +825,8 @@ def sample(field_key, run_dt, fxx, lat0, lon0, model="hrrr"):
     d = (latf - lat0) ** 2 + (lonf - lon0) ** 2
     i = int(np.argmin(d))
     v = vals[i]
+    if f.get("radar_ptype") and math.isfinite(v):
+        v = v % 100                                  # the echo, without the type
     return None if not math.isfinite(v) else round(float(v), 2)
 
 
@@ -795,6 +843,10 @@ def _clear(color):
 def _cmap_norm(f):
     if f.get("cmap") == "_nws":
         return _nws_reflectivity()
+    if f.get("radar_ptype"):
+        cmap = ListedColormap(RP_COLORS)
+        cmap.set_bad((0, 0, 0, 0))
+        return cmap, BoundaryNorm(range(len(RP_COLORS) + 1), cmap.N)
     if f.get("levels"):
         levels, colors = f["levels"], f["colors"]
         if len(colors) == len(levels):               # last colour = past the top
@@ -820,7 +872,7 @@ def _cmap_norm(f):
 
 def _shading(f):
     # Blending between categories would invent sleet along every rain/snow line.
-    return "nearest" if f.get("cats") else "gouraud"
+    return "nearest" if f.get("cats") or f.get("radar_ptype") else "gouraud"
 
 
 def _cache_path(*parts):
@@ -858,6 +910,8 @@ def _draw(f, data, lat, lon, out_path, stride):
 
     # downsample the grid for rendering — far fewer triangles for gouraud to
     # rasterize (the expensive part), smoothed back over the gaps by the shading.
+    if f.get("radar_ptype"):
+        data = _rp_index(data % 100, data // 100)
     d = data[::stride, ::stride]
     la = lat[::stride, ::stride]
     lo = lon[::stride, ::stride]
@@ -877,6 +931,14 @@ def _draw(f, data, lat, lon, out_path, stride):
 def _colorbar(f, ax, tick_color, edge_color, size):
     cmap, norm = _cmap_norm(f)
     banded = bool(f.get("levels")) and not f.get("cats")
+    if f.get("radar_ptype"):
+        cb = matplotlib.colorbar.ColorbarBase(ax, cmap=cmap, norm=norm, orientation="horizontal")
+        n = len(RP_LEVELS)
+        cb.set_ticks([n * g + n / 2.0 for g in range(len(RP_GROUPS))])
+        cb.set_ticklabels(["%s, light to heavy" % g for g in RP_GROUPS])
+        cb.ax.tick_params(labelsize=size, colors=tick_color, length=0)
+        cb.outline.set_edgecolor(edge_color)
+        return cb
     cb = matplotlib.colorbar.ColorbarBase(
         ax, cmap=cmap, norm=norm, orientation="horizontal",
         extend="max" if banded else "neither")
@@ -1151,7 +1213,20 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     sigma = max(1.5, 9.0 / max(px_per_cell, 0.1))
     passes = int(min(14, round(1.5 * sigma * sigma)))
     bands = _bands(f)
-    if bands:
+    if f.get("radar_ptype"):
+        # Two things to smooth, and they cannot be smoothed as one number: the
+        # echo, and which type owns each spot. The type is settled by smoothing
+        # a yes/no layer per group and taking the strongest, so a rain/snow
+        # line is a clean edge rather than a band of invented mix.
+        has = np.isfinite(sv)
+        dbz, grp = np.where(has, sv % 100, 0.0), np.where(has, sv // 100, -1)
+        k = int(min(6, max(1, round(1500.0 / max(sv.shape)))))
+        echo = _smooth(_upsample(_smooth(dbz, passes), k), 2 if k > 1 else 0)
+        own = np.argmax(np.stack([_upsample(_smooth((grp == g).astype("float32"), passes), k)
+                                  for g in range(len(RP_GROUPS))]), axis=0)
+        ax.pcolormesh(_upsample(sx, k), _upsample(sy, k), np.ma.masked_invalid(_rp_index(echo, own)),
+                      cmap=cmap, norm=norm, shading="nearest", zorder=2, rasterized=True)
+    elif bands:
         # A banded scale wants real contours: shading a mesh leaves every band
         # edge stepped along the grid cells. The grid is also resampled finer
         # first, then smoothed once more, so a band edge is a curve rather than
@@ -1203,7 +1278,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         # no number where the field is blank there: under the bottom of a banded
         # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
         blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
-        shown = math.isfinite(v) and not blank and not f.get("cats")
+        shown = math.isfinite(v) and not blank and not f.get("cats") and not f.get("radar_ptype")
         if shown:
             ax.text(cx, cy + (y1 - y0) * 0.012, _fmt_value(v, f), ha="center", va="bottom",
                     fontsize=14.5, fontweight="bold", color="#111", path_effects=halo, zorder=6)
@@ -1212,7 +1287,8 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
 
     # ---- title block ----
     m = MODELS[model]
-    unit = "" if f.get("cats") else " (%s)" % f["unit"]
+    plain = f.get("cats") or f.get("radar_ptype")      # no unit, no single number
+    unit = "" if plain else " (%s)" % f["unit"]
     fig.text(0.011, 0.985, "%s  ·  %s%s" % (m["name"], f["label"], unit), fontfamily=TITLE_FONT,
              fontsize=26, fontweight="semibold", color="#111", va="top", ha="left")
     fig.text(0.011, 0.940, _when(run_dt, fxx, reg["tz"]),
@@ -1221,14 +1297,14 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
              fontweight="semibold", color="#111", va="top", ha="right")
     seen = vals[inview[sl]] if inview[sl].shape == vals.shape else vals
     seen = seen[np.isfinite(seen)]
-    if seen.size and not f.get("cats"):
+    if seen.size and not plain:
         fig.text(0.989, 0.940, "Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"]),
                  fontsize=13, fontweight="medium", color="#3a4048", va="top", ha="right")
 
     # ---- colorbar ----
     cax = fig.add_axes([0.2, 0.036, 0.6, 0.018])
     _colorbar(f, cax, "#222", "#444", 11.5)
-    if not f.get("cats"):
+    if not plain:
         fig.text(0.192, 0.045, f["unit"], fontsize=12, fontweight="medium", color="#222", va="center", ha="right")
     fig.text(0.989, 0.014, "Data: %s" % credit(model), fontsize=9.5,
              color="#666", va="bottom", ha="right")

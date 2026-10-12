@@ -37,19 +37,19 @@ import hrrr_render as hr
 # temperature and gusts in the set, more than its one core has.
 #   TOTALS : accumulations, drawn only at the hours a total gets quoted for
 #   LOOPS  : fields that move, drawn at a coarser step than the model's own
-# This comes to about 6,500 maps a day. Anything else still draws on request.
+# This comes to about 8,000 maps a day. Anything else still draws on request.
 AREAS = ["wny", "newyork", "northeast", "conus"]
 LONG = [24, 48, 72, 120, 168, 240]
 #          totals at these hours                 loop fields, every N h, out to
 PLAN = {
     "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18],
-                  loops=["refc", "ptype", "t2m", "gust"], every=3, to=18),
+                  loops=["refc_ptype", "refc", "ptype", "t2m", "gust"], every=3, to=18),
     "nam":   dict(totals=["apcp_tot", "snow10"], at=[24, 48, 60],
-                  loops=["refc", "ptype", "t2m", "gust"], every=3, to=60),
+                  loops=["refc_ptype", "refc", "ptype", "t2m", "gust"], every=3, to=60),
     "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG,
-                  loops=["ptype", "t2m", "gust"], every=6, to=120),
+                  loops=["refc_ptype", "ptype", "t2m", "gust"], every=6, to=120),
     "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG,
-                  loops=["ptype", "t2m", "gust"], every=6, to=120),
+                  loops=["refc_ptype", "ptype", "t2m", "gust"], every=6, to=120),
 }
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes

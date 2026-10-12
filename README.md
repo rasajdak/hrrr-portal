@@ -46,8 +46,8 @@ next deploy:
   byte-identical to the commit it was blocking. The pull refused until it was
   stashed. Edit here, commit, push, pull.
 
-## Fields (56 on HRRR, grouped in the picker)
-- **Radar & storms** — composite and 1 km reflectivity · hourly max reflectivity · echo top · VIL · 2–5, 0–3 and 0–2 km updraft helicity · max updraft and downdraft · max hail size · lightning
+## Fields (57 on HRRR, grouped in the picker)
+- **Radar & storms** — radar by precipitation type (composite reflectivity in three colour families: rain, mix, snow) · composite and 1 km reflectivity · hourly max reflectivity · echo top · VIL · 2–5, 0–3 and 0–2 km updraft helicity · max updraft and downdraft · max hail size · lightning
 - **Instability** — surface / mixed-layer / most-unstable / 0–3 km CAPE · surface CIN · best lifted index · precipitable water
 - **Rotation & shear** — 0–3 km & 0–1 km storm-relative helicity · 0–6 km & 0–1 km bulk shear
 - **Surface weather** — 2 m temp · dewpoint · RH · 10 m wind · gust · MSLP · visibility
@@ -57,7 +57,7 @@ next deploy:
 - **Smoke (HRRR-Smoke)** — near-surface smoke · vertically-integrated smoke
 - **Upper air (pressure levels)** — 500 mb height · 850/500 mb temp · 700 mb RH · 700 mb vertical velocity · 250 mb (jet) & 850 mb wind speed
 
-Not every model carries every field: NAM has 45, RAP 41, GFS 35, ECMWF 22 (its
+Not every model carries every field: NAM has 46, RAP 42, GFS 36, ECMWF 23 (its
 names and index format differ, so they sit in their own `ECMWF` table). A field's
 `models` says who has it and `per` holds the per-model differences (NAM and GFS
 call sea-level pressure `PRMSL`, and so on). Add more by extending `FIELDS` in
