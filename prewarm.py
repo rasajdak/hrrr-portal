@@ -157,6 +157,10 @@ def push(dest, key):
     import tarfile
     sent_path = os.path.join(hr.CACHE_DIR, ".pushed")
     have = {n for n in os.listdir(hr.CACHE_DIR) if n.endswith(".png")}
+    # and the loop's base and label layers, which live one folder down
+    geo = os.path.join(hr.CACHE_DIR, "geo")
+    if os.path.isdir(geo):
+        have |= {"geo/" + n for n in os.listdir(geo) if n.startswith("loop_") and n.endswith(".png")}
     sent = set(open(sent_path).read().split()) if os.path.exists(sent_path) else set()
     todo = sorted(have - sent)
     if not todo:
@@ -196,7 +200,22 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
     if free < MIN_FREE_GB:
         print("only %.1f GB free: drawing nothing this pass" % free)
         return
+    # The web server is the fallback, not a second drawer. While another
+    # machine has delivered maps in the last half hour (mapsync-receive touches
+    # this file), a lean pass stands down and leaves the one core to serving.
+    alive = os.path.join(hr.CACHE_DIR, ".drawn-elsewhere")
+    if want is LEAN and os.path.exists(alive) and time.time() - os.path.getmtime(alive) < 1800:
+        print("another machine is drawing: pruned only")
+        return
     start, drawn, missing = time.time(), 0, set()
+    # A region's loop layers (land and relief, then roads and names) are slow to
+    # build the first time, so they are made here, ahead of anyone asking.
+    for region in want["loop_areas"]:
+        for layer in ("base", "top"):
+            try:
+                loop.base_png(region, layer)
+            except Exception as e:
+                print("skip loop %s layer for %s: %s" % (layer, region, e), flush=True)
     work = [g for g in groups(want) if g[4]]
     if workers > 1 and work:
         # The first group is drawn here, alone: on a fresh machine it is what

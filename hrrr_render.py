@@ -79,6 +79,16 @@ import threading
 GEO_LOCK = threading.RLock()
 
 
+def part_name(path):
+    """
+    A scratch name for writing `path`, renamed over it when complete. Unique to
+    the process and the thread: the process id alone let two requests in one
+    server process write the same scratch file, and the slower one then found
+    it already renamed away.
+    """
+    return "%s.%d.%d.part" % (path, os.getpid(), threading.get_ident())
+
+
 def _locked(fn):
     @functools.wraps(fn)
     def inner(*a, **k):
@@ -584,6 +594,7 @@ def _message(model, url, start, end):
     return _decode(model, _http(url, rng=(start, end)))
 
 
+@_locked
 def _decode(model, raw):
     import cfgrib
     fd, path = tempfile.mkstemp(suffix=".grib2", dir=CACHE_DIR)
@@ -674,7 +685,7 @@ def _accumulate(f, model, run_dt, fxx):
             if len(raws) > 1:
                 part = part * np.nan_to_num(_decode(model, raws[1])[0][0])
             total = part if total is None else total + part
-            tmp = "%s.%d.part" % (memo(h), os.getpid())   # two drawers may share a total
+            tmp = part_name(memo(h))   # two drawers may share a total
             with open(tmp, "wb") as fh:
                 np.savez_compressed(fh, a=total.astype("float16"))
             os.replace(tmp, memo(h))
@@ -939,7 +950,7 @@ def _draw(f, data, lat, lon, out_path, stride):
     ax.pcolormesh(lo, la, field, transform=ccrs.PlateCarree(),
                   cmap=cmap, norm=norm, shading=_shading(f))
 
-    tmp = "%s.%d.part" % (out_path, os.getpid())            # two workers may render the same frame
+    tmp = part_name(out_path)            # two workers may render the same frame
     fig.savefig(tmp, format="png", transparent=True, dpi=dpi,
                 pad_inches=0, bbox_inches=None)
     plt.close(fig)
@@ -1291,7 +1302,7 @@ def _basemap(region, proj, x0, x1, y0, y1):
         counties=layer(_county_shapes(lw, le, ls, ln)) if regional else [],
     )
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = "%s.%d.part" % (path, os.getpid())
+    tmp = part_name(path)
     with open(tmp, "wb") as fh:
         pickle.dump(base, fh, protocol=4)
     os.replace(tmp, path)
@@ -1555,7 +1566,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     fig.text(0.989, 0.014, "Data: %s" % credit(model), fontsize=9.5,
              color="#666", va="bottom", ha="right")
 
-    tmp = "%s.%d.part" % (out_path, os.getpid())
+    tmp = part_name(out_path)
     fig.savefig(tmp, format="png", dpi=MAP_DPI, facecolor="white")
     plt.close(fig)
     os.replace(tmp, out_path)

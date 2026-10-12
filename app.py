@@ -11,7 +11,7 @@ Endpoints
   POST /api/save              -> keep one static map for good, under /saved/
   GET /saved                  -> the kept maps, newest first
   GET /loop                   -> the animated futurecast page
-  GET /api/loop               -> its run, frame times and layers (query: model, region)
+  GET /api/loop               -> its run, frame times and layers (query: model, region, run)
   GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m)
   GET /api/loop/base          -> a region's base or label layer (query: region, layer)
   GET /share                  -> a page around one static map, for posting a link
@@ -177,7 +177,10 @@ def loop_page():
 @app.route("/api/loop")
 def loop_meta():
     try:
-        return jsonify(loop.meta(request.args.get("model", "hrrr"), request.args.get("region", "wny")))
+        model = request.args.get("model", "hrrr")
+        asked = request.args.get("run")
+        return jsonify(loop.meta(model, request.args.get("region", "wny"),
+                                 _parse_run(asked, model) if asked else None))
     except ValueError as e:
         return jsonify(error=str(e)), 400
 

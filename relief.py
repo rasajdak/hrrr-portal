@@ -14,6 +14,7 @@ tiles also carry, is flattened: this is a weather map, not a chart.
 import io
 import math
 import os
+import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -115,7 +116,7 @@ def shade(key, proj, x0, x1, y0, y1, w, h, cache_dir):
     s[g <= 0.5] = 0.0                                    # sea level stays flat
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = "%s.%d.part" % (path, os.getpid())
+    tmp = "%s.%d.%d.part" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "wb") as fh:
         np.save(fh, s.astype("float16"))
     os.replace(tmp, path)

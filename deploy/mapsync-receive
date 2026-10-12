@@ -17,3 +17,11 @@ for f in "$d"/*.png; do
     chmod 644 "$f"
     mv "$f" "$CACHE/"
 done
+# the animated loop's base and label layers arrive under geo/
+for f in "$d"/geo/loop_*.png; do
+    [ -f "$f" ] || continue
+    chmod 644 "$f"
+    mv "$f" "$CACHE/geo/"
+done
+# tell the web server's own drawing job that another machine is on the case
+touch "$CACHE/.drawn-elsewhere"

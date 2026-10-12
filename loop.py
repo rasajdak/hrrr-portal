@@ -196,7 +196,7 @@ def frames(model, run_dt, m, regions, flows=True):
         rgb = np.stack([hr._smooth(_sample(c, i, j), passes) for c in chans], axis=-1)
         img = Image.fromarray(np.clip(rgb / 75.0 * 255.0, 0, 255).astype("uint8"), "RGB")
         path = frame_path(model, run_dt, m, region)
-        tmp = "%s.%d.part" % (path, os.getpid())
+        tmp = hr.part_name(path)
         img.save(tmp, format="PNG", optimize=True)
         os.replace(tmp, path)
     if flows:
@@ -307,7 +307,7 @@ def flow_png(model, run_dt, m, region):
     d = np.clip(_flow(load(m), load(m + step), maxd) / maxd, -1, 1)
     rgb = np.zeros(d.shape[:2] + (3,), dtype="uint8")
     rgb[..., :2] = np.round(128 + d * 127).astype("uint8")
-    tmp = "%s.%d.part" % (path, os.getpid())
+    tmp = hr.part_name(path)
     Image.fromarray(rgb, "RGB").save(tmp, format="PNG")
     os.replace(tmp, path)
     return path
@@ -392,7 +392,7 @@ def base_png(region, layer):
                     color="#4f7391", alpha=0.9, zorder=4,
                     path_effects=[pe.withStroke(linewidth=2.8, foreground="white", alpha=0.7)])
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = "%s.%d.part" % (path, os.getpid())
+    tmp = hr.part_name(path)
     fig.savefig(tmp, format="png", dpi=dpi, transparent=(layer == "top"),
                 facecolor=hr.WATER if layer == "base" else "none")
     plt.close(fig)
@@ -401,13 +401,37 @@ def base_png(region, layer):
 
 
 # ------------------------------------------------------------------- meta ---
-def meta(model, region):
-    """Everything the page needs to start: the run, the frame times, the layers."""
+def recent_runs(model, region, have, count=None):
+    """
+    The newest run whose whole loop is posted and the ones before it, newest
+    first, each with how many of its frames are drawn for this region: what the
+    page's run picker lists.
+    """
+    cycle = hr.MODELS[model]["cycle"]
+    count = count or {1: 10, 6: 5, 12: 4}.get(cycle, 5)
+    latest, mins = latest_run(model), minutes(model)
+    out = []
+    for k in range(count):
+        r = latest - timedelta(hours=k * cycle)
+        out.append(dict(run=r.strftime("%Y%m%d%H"), iso=r.strftime("%Y-%m-%dT%H:00:00Z"),
+                        ready=sum(os.path.basename(frame_path(model, r, m, region)) in have for m in mins),
+                        of=len(mins)))
+    return out
+
+
+def meta(model, region, run=None):
+    """
+    Everything the page needs to start: the run, the frame times, the layers.
+    `run` (a UTC datetime) picks an earlier run; without it, the newest whose
+    whole loop is posted.
+    """
     if model not in LOOPS:
         raise ValueError("no loop for %r" % model)
     name, tall = hr.region_parts(region)
     BASE_W, BASE_H, FRAME_W, FRAME_H = dims(region)
-    run = latest_run(model)
+    newest = latest_run(model)
+    if run is None or run > newest:
+        run = newest
     stamp = run.strftime("%Y%m%d%H")
     mins = minutes(model)
     have = {n for n in os.listdir(hr.CACHE_DIR) if n.startswith("loop_")}
@@ -415,6 +439,7 @@ def meta(model, region):
         model=model, name=hr.MODELS[model]["name"], credit=hr.credit(model),
         region=region, tall=tall, region_label=hr.REGIONS[name]["label"], tz=hr.REGIONS[name]["tz"],
         run=stamp, run_iso=run.strftime("%Y-%m-%dT%H:00:00Z"),
+        latest_run=newest.strftime("%Y%m%d%H"), runs=recent_runs(model, region, have),
         step=LOOPS[model]["step"], minutes=mins,
         ready=[m for m in mins if os.path.basename(frame_path(model, run, m, region)) in have],
         width=BASE_W, height=BASE_H, frame_w=FRAME_W, frame_h=FRAME_H,

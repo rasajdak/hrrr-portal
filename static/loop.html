@@ -21,6 +21,7 @@
   select:hover,button:hover,a.btn:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);border-color:var(--accent);color:#04121f;font-weight:600;min-width:70px}
   button:disabled{opacity:.5;cursor:default}
+  button.step{padding:6px 9px;font-size:15px;line-height:1}
   .sp{flex:1}
   /* the stage is a 1920 x 1080 picture; the page only scales it */
   #stage{display:block;width:100%;height:auto;border-radius:10px;background:#fff;aspect-ratio:16/9;margin:0 auto}
@@ -38,6 +39,12 @@
     <h1>Futurecast loop</h1>
     <div class="group"><label for="model">Model</label><select id="model"></select></div>
     <div class="group"><label for="region">Region</label><select id="region"></select></div>
+    <div class="group" title="Which model run the loop plays. Times are Eastern. A dot marks a run whose frames are already drawn.">
+      <label for="runsel">Run</label>
+      <button id="runolder" class="step" title="The run before this one">‹</button>
+      <select id="runsel"></select>
+      <button id="runnewer" class="step" title="The run after this one">›</button>
+    </div>
     <div class="group"><label for="shape">Shape</label>
       <select id="shape"><option value="wide">Landscape 16:9</option><option value="tall">Vertical 9:16 (reels)</option></select></div>
     <div class="group"><label for="speed">Speed</label>
@@ -82,7 +89,7 @@
 
   var META=null, baseImg=null, topImg=null, tex=[], flow=[], loaded=0, token=0;
   var head=0, playing=true, last=0, hold=0, recorder=null, wantVideo=false, savedNote="";
-  var MODEL="hrrr", REGION="wny";
+  var MODEL="hrrr", REGION="wny", RUN=null;            // RUN null: the newest complete run
   try{ MODEL=localStorage.getItem("loopmodel")||MODEL; REGION=localStorage.getItem("region")||REGION; }catch(e){}
   if(REGION==="conus"&&!localStorage.getItem("loopregion")) REGION="wny";
   try{ REGION=localStorage.getItem("loopregion")||REGION; }catch(e){}
@@ -150,7 +157,7 @@
     tex.concat(flow).forEach(function(t){ if(t) gl.deleteTexture(t); }); tex=[]; flow=[]; loaded=0; head=0; META=null; baseImg=topImg=null;
     wantVideo=false; savedNote=""; $("rec").textContent="Save as video"; $("note").textContent="loading…"; draw();
     var RK=encodeURIComponent(regionKey());
-    fetch("/api/loop?model="+MODEL+"&region="+RK).then(function(r){ return r.json(); }).then(function(m){
+    fetch("/api/loop?model="+MODEL+"&region="+RK+(RUN?"&run="+RUN:"")).then(function(r){ return r.json(); }).then(function(m){
       if(my!==token) return;
       if(m.error) throw new Error(m.error);
       META=m; tex=new Array(m.minutes.length).fill(null); flow=new Array(m.minutes.length).fill(null);
@@ -159,9 +166,20 @@
         m.regions.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("region").appendChild(o); });
       }
       $("model").value=MODEL; $("region").value=REGION;
+      showRuns(m);
       setPalette(m.colors);
-      image("/api/loop/base?region="+RK+"&layer=base").then(function(i){ if(my===token) baseImg=i; });
-      image("/api/loop/base?region="+RK+"&layer=top").then(function(i){ if(my===token) topImg=i; });
+      // The base map and the label sheet. A region nobody has opened before has
+      // to have them built first, which can take minutes, so keep asking rather
+      // than give up, and say so (see the note under the stage).
+      function layer(name, tries){
+        image("/api/loop/base?region="+RK+"&layer="+name+(tries?"&t="+tries:"")).then(function(i){
+          if(my!==token) return;
+          if(name==="base") baseImg=i; else topImg=i;
+        }).catch(function(){
+          if(my===token&&tries<40) setTimeout(function(){ layer(name, tries+1); }, 8000);
+        });
+      }
+      layer("base",0); layer("top",0);
       // frames in order, four at a time: the loop can start before they are all in
       var next=0;
       function one(){
@@ -181,6 +199,32 @@
       for(var i=0;i<4;i++) one();
     }).catch(function(e){ if(my===token) $("note").textContent=String(e.message||e); });
   }
+
+  // ---- which run ----
+  // Each run by its Eastern start time, with the Zulu hour beside it. The newest
+  // complete run plays unless another is picked; the arrows step one either way.
+  function etRun(iso){
+    var d=new Date(iso);
+    return d.toLocaleString("en-US",{timeZone:"America/New_York",weekday:"short",hour:"numeric",timeZoneName:"short"})+" ("+("0"+d.getUTCHours()).slice(-2)+"Z)";
+  }
+  function showRuns(m){
+    var sel=$("runsel"); sel.innerHTML="";
+    m.runs.forEach(function(r,i){
+      var o=document.createElement("option"); o.value=r.run;
+      o.textContent=(r.ready>=r.of?"● ":"")+etRun(r.iso)+(i===0?"  newest":"");
+      sel.appendChild(o);
+    });
+    if(!m.runs.some(function(r){ return r.run===m.run; })){
+      var o=document.createElement("option"); o.value=m.run; o.textContent=etRun(m.run_iso); sel.appendChild(o);
+    }
+    sel.value=m.run;
+    var at=sel.selectedIndex;
+    $("runolder").disabled=at>=sel.options.length-1; $("runnewer").disabled=at<=0;
+  }
+  function setRun(r){ RUN=(META&&r===META.latest_run)?null:r; load(); }
+  $("runsel").addEventListener("change",function(e){ setRun(e.target.value); });
+  $("runolder").addEventListener("click",function(){ var s=$("runsel"); if(s.selectedIndex<s.options.length-1) setRun(s.options[s.selectedIndex+1].value); });
+  $("runnewer").addEventListener("click",function(){ var s=$("runsel"); if(s.selectedIndex>0) setRun(s.options[s.selectedIndex-1].value); });
 
   // ---- drawing ----
   function rounded(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
@@ -313,7 +357,8 @@
       var total=META.minutes.length-1;
       if(recorder) $("rec").textContent="Recording "+Math.round(100*Math.min(head,total)/total)+"% (cancel)";
       else if(wantVideo) $("rec").textContent="Video starts when loaded (cancel)";
-      $("note").textContent=loaded<META.minutes.length ? "loading weather "+loaded+" of "+META.minutes.length
+      $("note").textContent=(!baseImg||!topImg) ? "preparing this region's map (first time only, can take a few minutes)…"
+        : loaded<META.minutes.length ? "loading weather "+loaded+" of "+META.minutes.length
         : recorder ? "recording the whole loop, it saves itself at the end"
         : savedNote || (new Date(META.run_iso).toLocaleString("en-US",{timeZone:"America/New_York",weekday:"short",hour:"numeric",timeZoneName:"short"})+" run ("+META.run.slice(8)+"Z), "+META.minutes.length+" times");
     }
@@ -361,7 +406,7 @@
     playing=!playing; $("play").textContent=playing?"Pause":"Play";
   });
   $("scrub").addEventListener("input",function(e){ head=Math.min(Math.max(0,usable()-1), e.target.value/10); hold=0; });
-  $("model").addEventListener("change",function(e){ MODEL=e.target.value; try{ localStorage.setItem("loopmodel",MODEL); }catch(x){} load(); });
+  $("model").addEventListener("change",function(e){ MODEL=e.target.value; RUN=null; try{ localStorage.setItem("loopmodel",MODEL); }catch(x){} load(); });
   $("region").addEventListener("change",function(e){ REGION=e.target.value; try{ localStorage.setItem("loopregion",REGION); }catch(x){} load(); });
   $("shape").addEventListener("change",function(e){ TALL=e.target.value==="tall"; try{ localStorage.setItem("loopshape",TALL?"tall":"wide"); }catch(x){} setShape(); load(); });
   document.addEventListener("keydown",function(e){
