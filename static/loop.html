@@ -60,8 +60,9 @@
   "use strict";
   var $=function(id){ return document.getElementById(id); };
   // Landscape: a title strip over the map. Vertical: the map fills the whole
-  // reel, and two slim edge-to-edge bars carry everything else, set just inside
-  // the top and bottom the apps cover with their own buttons and caption.
+  // reel, with one block high up (a large day and time, then the legend), kept
+  // under the top of the screen the app covers. The lower third is left alone:
+  // the caption sits there, so nothing that matters is put in it.
   var W=1920, H=1080, HEAD=75, MW=1920, MH=1005, TALL=false;
   try{ TALL=localStorage.getItem("loopshape")==="tall"; }catch(e){}
   function setShape(){
@@ -209,27 +210,39 @@
 
     var c=clock(min), total=META.minutes.length-1, at=total?Math.min(head,total)/total:0;
     if(TALL){
-      // top bar: the clock, and whose map this is
-      var ty=250, th=112;
-      ctx.fillStyle="rgba(15,23,35,.90)"; ctx.fillRect(0,ty,W,th);
-      drawClock(c, 20, ty+14, 0.98, true);
-      ctx.textBaseline="middle"; ctx.textAlign="right";
-      ctx.fillStyle="#fff"; ctx.font='600 40px "Barlow Condensed", Barlow, sans-serif'; ctx.fillText("Futurecast radar", W-24, ty+38);
-      ctx.fillStyle="#b9c8da"; ctx.font='500 28px "Barlow Condensed", Barlow, sans-serif'; ctx.fillText("ryansajdak.com", W-24, ty+80);
-      // bottom bar: the legend in one line, the model, and where in the loop this is
-      var bh=78, by=H-400-bh;
-      ctx.fillStyle="rgba(15,23,35,.90)"; ctx.fillRect(0,by,W,bh);
-      var x=24;
+      // One block, high on the reel but under the part the app covers: a large
+      // day and time (the thing a viewer has to read at a glance), then a thin
+      // row for the legend. Nothing else is laid over the map.
+      var ty=268, th=168, lh=64;
+      ctx.fillStyle="rgba(15,23,35,.92)"; ctx.fillRect(0,ty,W,th+lh);
+      ctx.textBaseline="middle"; ctx.textAlign="left";
+      var big='600 132px "Barlow Condensed", Barlow, sans-serif';
+      ctx.font=big; var wDay=ctx.measureText(c.day).width;
+      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,ty,24+wDay+24,th);
+      ctx.fillStyle="#04121f"; ctx.fillText(c.day, 24, ty+th/2+6);
+      ctx.fillStyle="#fff"; ctx.fillText(c.time, 24+wDay+24+22, ty+th/2+6);
+      var wTime=ctx.measureText(c.time).width;
+      ctx.font='500 44px "Barlow Condensed", Barlow, sans-serif'; ctx.fillStyle="#b9c8da";
+      ctx.fillText(c.zone, 24+wDay+24+22+wTime+16, ty+th/2+34);
+      // legend row, with whose map this is at its right-hand end
+      var ly=ty+th, x=24;
+      ctx.fillStyle="rgba(255,255,255,.10)"; ctx.fillRect(0,ly,W,2);
       META.groups.forEach(function(g,n){
-        ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 28px Barlow, sans-serif';
-        ctx.fillText(g, x, by+bh/2+1); x+=ctx.measureText(g).width+12;
-        for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[n*6+i]; ctx.fillRect(x+i*24, by+bh/2-13, 25, 26); }
-        x+=6*24+30;
+        ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 26px Barlow, sans-serif';
+        ctx.fillText(g, x, ly+lh/2+2); x+=ctx.measureText(g).width+10;
+        for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[n*6+i]; ctx.fillRect(x+i*21, ly+lh/2-11, 22, 24); }
+        x+=6*21+26;
       });
-      ctx.textAlign="right"; ctx.fillStyle="#b9c8da"; ctx.font='500 26px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText(META.name, W-24, by+bh/2+1);
-      ctx.fillStyle="#243244"; ctx.fillRect(0,by+bh,W,8);
-      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,by+bh,W*at,8);
+      ctx.textAlign="right"; ctx.fillStyle="#fff"; ctx.font='600 32px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("ryansajdak.com", W-24, ly+lh/2+2);
+      // where in the loop this is, along the foot of the block
+      ctx.fillStyle="#243244"; ctx.fillRect(0,ly+lh,W,8);
+      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,ly+lh,W*at,8);
+      // model and source, small, low in the clear part of the map
+      ctx.textAlign="right"; ctx.font='500 24px Barlow, sans-serif'; ctx.lineWidth=5;
+      ctx.strokeStyle="rgba(255,255,255,.9)"; ctx.fillStyle="#222";
+      var cr=META.name+"  ·  Data: "+META.credit;
+      ctx.strokeText(cr, W-24, 1230); ctx.fillText(cr, W-24, 1230);
       return;
     }
     // header
