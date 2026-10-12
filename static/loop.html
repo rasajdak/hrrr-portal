@@ -60,7 +60,8 @@
   "use strict";
   var $=function(id){ return document.getElementById(id); };
   // Landscape: a title strip over the map. Vertical: the map fills the whole
-  // reel and everything else floats on it, inside the band the apps leave clear.
+  // reel, and two slim edge-to-edge bars carry everything else, set just inside
+  // the top and bottom the apps cover with their own buttons and caption.
   var W=1920, H=1080, HEAD=75, MW=1920, MH=1005, TALL=false;
   try{ TALL=localStorage.getItem("loopshape")==="tall"; }catch(e){}
   function setShape(){
@@ -208,21 +209,27 @@
 
     var c=clock(min), total=META.minutes.length-1, at=total?Math.min(head,total)/total:0;
     if(TALL){
-      // title card, clock and legend stacked inside the middle of the reel: the
-      // top ~250 px and bottom ~380 px are where the apps put their own buttons
-      ctx.fillStyle="rgba(255,255,255,.93)"; rounded(40,262,W-80,132,16); ctx.fill();
-      ctx.textBaseline="middle"; ctx.textAlign="left"; ctx.fillStyle="#111";
-      ctx.font='600 58px "Barlow Condensed", Barlow, sans-serif'; ctx.fillText("Futurecast radar", 68, 306);
-      ctx.font='500 34px "Barlow Condensed", Barlow, sans-serif'; ctx.fillStyle="#3a4048"; ctx.fillText(META.name, 68, 360);
-      ctx.textAlign="right"; ctx.fillStyle="#111"; ctx.font='600 36px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText("ryansajdak.com", W-68, 330);
-      drawClock(c, 40, 416, 1.25);
-      drawLegend(40, H-400-158, 1.25);
-      ctx.textAlign="right"; ctx.font='500 22px Barlow, sans-serif'; ctx.lineWidth=4;
-      ctx.strokeStyle="rgba(255,255,255,.85)"; ctx.fillStyle="#333";
-      ctx.strokeText("Data: "+META.credit, W-40, H-400-20); ctx.fillText("Data: "+META.credit, W-40, H-400-20);
-      ctx.fillStyle="rgba(15,23,35,.25)"; ctx.fillRect(40,H-384,W-80,8);
-      ctx.fillStyle="#4ea3ff"; ctx.fillRect(40,H-384,(W-80)*at,8);
+      // top bar: the clock, and whose map this is
+      var ty=250, th=112;
+      ctx.fillStyle="rgba(15,23,35,.90)"; ctx.fillRect(0,ty,W,th);
+      drawClock(c, 20, ty+14, 0.98, true);
+      ctx.textBaseline="middle"; ctx.textAlign="right";
+      ctx.fillStyle="#fff"; ctx.font='600 40px "Barlow Condensed", Barlow, sans-serif'; ctx.fillText("Futurecast radar", W-24, ty+38);
+      ctx.fillStyle="#b9c8da"; ctx.font='500 28px "Barlow Condensed", Barlow, sans-serif'; ctx.fillText("ryansajdak.com", W-24, ty+80);
+      // bottom bar: the legend in one line, the model, and where in the loop this is
+      var bh=78, by=H-400-bh;
+      ctx.fillStyle="rgba(15,23,35,.90)"; ctx.fillRect(0,by,W,bh);
+      var x=24;
+      META.groups.forEach(function(g,n){
+        ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 28px Barlow, sans-serif';
+        ctx.fillText(g, x, by+bh/2+1); x+=ctx.measureText(g).width+12;
+        for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[n*6+i]; ctx.fillRect(x+i*24, by+bh/2-13, 25, 26); }
+        x+=6*24+30;
+      });
+      ctx.textAlign="right"; ctx.fillStyle="#b9c8da"; ctx.font='500 26px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText(META.name, W-24, by+bh/2+1);
+      ctx.fillStyle="#243244"; ctx.fillRect(0,by+bh,W,8);
+      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,by+bh,W*at,8);
       return;
     }
     // header
@@ -231,7 +238,7 @@
     ctx.fillText(META.name+"  ·  Futurecast radar", 26, HEAD/2+2);
     ctx.textAlign="right"; ctx.font='600 34px "Barlow Condensed", Barlow, sans-serif';
     ctx.fillText("ryansajdak.com", W-26, HEAD/2+2);
-    drawClock(c, 26, HEAD+24, 1);
+    drawClock(c, 26, HEAD+24, 1, false);
     drawLegend(26, H-26-126, 1);
     // credit and a thin line showing where in the loop this is
     ctx.textAlign="right"; ctx.font='500 19px Barlow, sans-serif';
@@ -242,13 +249,13 @@
   }
 
   // the clock, the thing a futurecast is read by (k scales it for the reel)
-  function drawClock(c, x, y, k){
+  function drawClock(c, x, y, k, onDark){
     var big='600 '+Math.round(62*k)+'px "Barlow Condensed", Barlow, sans-serif', small='500 '+Math.round(30*k)+'px "Barlow Condensed", Barlow, sans-serif';
     ctx.textBaseline="middle"; ctx.textAlign="left";
     ctx.font=big; var wDay=ctx.measureText(c.day).width, wTime=ctx.measureText(c.time).width;
     ctx.font=small; var wZone=ctx.measureText(c.zone).width;
     var p=22*k, h=86*k, bw=p+wDay+p+wTime+14*k+wZone+24*k;
-    ctx.fillStyle="rgba(15,23,35,.92)"; rounded(x,y,bw,h,12*k); ctx.fill();
+    ctx.fillStyle=onDark?"#1b2634":"rgba(15,23,35,.92)"; rounded(x,y,bw,h,12*k); ctx.fill();
     ctx.fillStyle="#4ea3ff"; rounded(x,y,p+wDay+p/2,h,12*k); ctx.fill(); ctx.fillRect(x+12*k,y,wDay+p-1*k,h);
     ctx.font=big; ctx.fillStyle="#04121f"; ctx.fillText(c.day, x+p, y+h*0.535);
     ctx.fillStyle="#fff"; ctx.fillText(c.time, x+p+wDay+p, y+h*0.535);

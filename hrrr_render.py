@@ -1224,7 +1224,8 @@ def _basemap(region, proj, x0, x1, y0, y1):
     if region in _BASE:
         return _BASE[region]
     import pickle
-    path = os.path.join(CACHE_DIR, "geo", "base_%s_%s.pkl" % (region, BASE_REV))
+    path = os.path.join(CACHE_DIR, "geo", "base_%s_%s%s.pkl" % (
+        region, BASE_REV, TALL_TAG if region_parts(region)[1] else ""))
     if os.path.exists(path):
         try:
             with open(path, "rb") as fh:
@@ -1278,7 +1279,12 @@ def _basemap(region, proj, x0, x1, y0, y1):
     return base
 
 
-TALL = 1080.0 / 1920.0     # a phone held upright
+# The upright (reel) frame: the map fills the whole 1080 x 1920 video. (A
+# version that kept the map to the clear middle, between solid title and footer
+# bands, wasted a third of the screen and squashed the map; it was thrown out.)
+TALL_W, TALL_H = 1080, 1920
+TALL = float(TALL_W) / TALL_H
+TALL_TAG = "_v3"           # in cache names of upright layers; bump when this frame changes
 
 
 def region_parts(region):

@@ -42,10 +42,16 @@ def dims(region):
     """
     (base width, base height, frame width, frame height) in pixels. Landscape:
     the map area of a 1920 x 1080 video, under its title strip. A region asked
-    for as 'name@tall' is framed upright, 1080 x 1920, the whole of a reel.
-    Data frames are half the base size either way.
+    for as 'name@tall' is framed upright and fills the whole 1080 x 1920 reel.
+    Data frames are half the base size.
     """
-    return (1080, 1920, 540, 960) if hr.region_parts(region)[1] else (1920, 1005, 960, 502)
+    if hr.region_parts(region)[1]:
+        return hr.TALL_W, hr.TALL_H, hr.TALL_W // 2, hr.TALL_H // 2
+    return 1920, 1005, 960, 502
+
+
+def _tag(region):
+    return hr.TALL_TAG if hr.region_parts(region)[1] else ""
 
 
 # model -> minutes between frames, and how far the loop runs. HRRR posts
@@ -282,7 +288,7 @@ def _flow(a, b, maxd):
 
 def flow_path(model, run_dt, m, region):
     return os.path.join(hr.CACHE_DIR, "loop_%s_flow_%s_%s_%04d_%s.png" % (
-        FLOW_REV, model, run_dt.strftime("%Y%m%d%H"), m, region))
+        FLOW_REV, model, run_dt.strftime("%Y%m%d%H"), m, region + _tag(region)))
 
 
 def flow_png(model, run_dt, m, region):
@@ -308,7 +314,7 @@ def flow_png(model, run_dt, m, region):
 
 
 def frame_path(model, run_dt, m, region):
-    return _path(model, run_dt.strftime("%Y%m%d%H"), "%04d" % m, region)
+    return _path(model, run_dt.strftime("%Y%m%d%H"), "%04d" % m, region + _tag(region))
 
 
 def frame_png(model, run_dt, m, region):
@@ -331,7 +337,7 @@ def base_png(region, layer):
     name, _ = hr.region_parts(region)
     BASE_W, BASE_H, _, _ = dims(region)
     path = os.path.join(hr.CACHE_DIR, "geo", "loop_%s_%s_%s_%s.png" % (
-        layer, region, REV, hr.BASE_REV))
+        layer, region + _tag(region), REV, hr.BASE_REV))
     if os.path.exists(path):
         return path
     import matplotlib.pyplot as plt

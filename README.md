@@ -160,11 +160,14 @@ reels: the map fills the frame and the title, clock and legend sit in the band
 the apps leave clear. `prewarm.py` draws the frames ahead for `LOOP_AREAS`.
 
 ### Maps drawn ahead of time
-`prewarm.py` draws the static maps listed in its `PLAN` (per model: totals at a
-few quoted hours, moving fields at a coarse step, for the regions in `AREAS`) as soon as a model posts a new run, so the page opens them
+`prewarm.py` draws the static maps in its plan (per model: totals at a few
+quoted hours, moving fields at a set step, for a list of regions) as soon as a model posts a new run, so the page opens them
 instantly. A systemd timer runs one pass every 10 minutes at low priority; a
 pass skips maps that exist, stops after 8 minutes, and deletes cached frames
-older than 18 hours (and draws nothing if the disk is under 6 GB free). Edit `PLAN` to change the set; it is CPU on a one-core box.
+older than 18 hours (and draws nothing if the disk is under 6 GB free). There are
+two plans: `LEAN` for the droplet's one core, and `WIDE` (every HRRR hour, ten
+days of GFS and ECMWF, the Great Lakes), which a pass takes when it is given four
+or more workers, as the drawing Mac's is.
 
 ```bash
 sudo cp deploy/hrrr-prewarm.service deploy/hrrr-prewarm.timer /etc/systemd/system/

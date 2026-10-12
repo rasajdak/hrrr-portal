@@ -33,29 +33,46 @@ import time
 import hrrr_render as hr
 import loop
 
-# What is drawn ahead, for these regions. Not every frame: drawing all of them
-# was about 17,900 maps a day, and at the 3.4 s a map the droplet managed with
-# temperature and gusts in the set, more than its one core has.
-#   TOTALS : accumulations, drawn only at the hours a total gets quoted for
-#   LOOPS  : fields that move, drawn at a coarser step than the model's own
-# This comes to about 8,000 maps a day. Anything else still draws on request.
-AREAS = ["wny", "newyork", "northeast", "conus"]
+# What is drawn ahead. Two plans, because two very different machines run this:
+#
+#   LEAN  the droplet's one core, as a fallback: about 8,000 maps a day. Drawing
+#         every frame there (17,900 a day at 3.4 s a map) was more than it has.
+#   WIDE  the drawing Mac (six workers): every HRRR hour, GFS and ECMWF out the
+#         full ten days, more total hours, and the Great Lakes. About 19,700
+#         maps a day, which is also about what the droplet's disk can hold for
+#         the 18 hours frames are kept.
+#
+# A pass run with four or more workers takes the wide plan (or pass --wide).
+# In each plan:
+#   totals : accumulations, drawn only at the hours a total gets quoted for
+#   loops  : fields that move, drawn every N hours out to a limit
+# Anything not listed still draws on request.
 LONG = [24, 48, 72, 120, 168, 240]
-#          totals at these hours                 loop fields, every N h, out to
-PLAN = {
-    "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18],
-                  loops=["refc_ptype", "refc", "ptype", "t2m", "gust"], every=3, to=18),
-    "nam":   dict(totals=["apcp_tot", "snow10"], at=[24, 48, 60],
-                  loops=["refc_ptype", "refc", "ptype", "t2m", "gust"], every=3, to=60),
-    "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG,
-                  loops=["refc_ptype", "ptype", "t2m", "gust"], every=6, to=120),
-    "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG,
-                  loops=["refc_ptype", "ptype", "t2m", "gust"], every=6, to=120),
-}
+MOVING = ["refc_ptype", "refc", "ptype", "t2m", "gust"]
+MOVING_GLOBAL = ["refc_ptype", "ptype", "t2m", "gust"]          # no radar field worth a map
 
-# The animated loop's data frames, drawn ahead for these regions. A frame's
-# cost is its six downloads, shared by every region, so regions are cheap here.
-LOOP_AREAS = ["wny", "newyork", "northeast", "wny@tall", "northeast@tall"]   # @tall: upright, for reels
+LEAN = dict(
+    areas=["wny", "newyork", "northeast", "conus"],
+    # the animated loop's data frames. A frame's cost is its six downloads,
+    # shared by every region, so regions are cheap here. @tall: upright, for reels
+    loop_areas=["wny", "newyork", "northeast", "wny@tall", "northeast@tall"],
+    plan={
+        "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=3, to=18),
+        "nam":   dict(totals=["apcp_tot", "snow10"], at=[24, 48, 60], loops=MOVING, every=3, to=60),
+        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=120),
+        "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=120),
+    })
+
+WIDE = dict(
+    areas=["wny", "newyork", "northeast", "greatlakes", "conus"],
+    loop_areas=["wny", "newyork", "northeast", "greatlakes", "conus",
+                "wny@tall", "newyork@tall", "northeast@tall", "greatlakes@tall"],
+    plan={
+        "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=1, to=18),
+        "nam":   dict(totals=["apcp_tot", "snow10"], at=[12, 24, 36, 48, 60], loops=MOVING, every=3, to=60),
+        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240),
+        "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240),
+    })
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
 # Cached frames older than this are deleted. The set above writes roughly 20 GB
@@ -65,13 +82,14 @@ KEEP_PNG = 18 * 3600
 MIN_FREE_GB = 6          # below this, prune only and draw nothing
 
 
-def groups():
+def groups(want=LEAN):
     """
     (model, run, field, fxx, [regions]) for every planned frame with a map still
     to draw, newest need first: HRRR, then the rest. One group is one download,
     shared by its regions, so a group is the unit handed to a worker.
     """
-    for model, p in PLAN.items():
+    AREAS, LOOP_AREAS = want["areas"], want["loop_areas"]
+    for model, p in want["plan"].items():
         run = hr.latest_available_run(model)
         frames = [(f, h) for f in p["totals"] for h in p["at"]]
         frames += [(f, h) for f in p["loops"] for h in range(0, p["to"] + 1, p["every"])]
@@ -165,7 +183,7 @@ def push(dest, key):
     return len(todo)
 
 
-def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET):
+def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=LEAN):
     lock = open(os.path.join(hr.CACHE_DIR, "prewarm.lock"), "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -179,7 +197,7 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET):
         print("only %.1f GB free: drawing nothing this pass" % free)
         return
     start, drawn, missing = time.time(), 0, set()
-    work = [g for g in groups() if g[4]]
+    work = [g for g in groups(want) if g[4]]
     if workers > 1 and work:
         # The first group is drawn here, alone: on a fresh machine it is what
         # fetches the border and county files, and several processes fetching
@@ -221,11 +239,14 @@ def _arg(name, default=None):
 
 
 if __name__ == "__main__":
+    workers = int(_arg("--workers", "1"))
+    want = WIDE if (workers >= 4 or "--wide" in sys.argv) else LEAN
     if "--list" in sys.argv:
         n = [0, 0]
-        for g in groups():
-            n[g[2] == "loop"] += len(LOOP_AREAS if g[2] == "loop" else AREAS)
-        print(n[0], "maps and", n[1], "loop frames per full set of runs")
+        for g in groups(want):
+            n[g[2] == "loop"] += len(want["loop_areas"] if g[2] == "loop" else want["areas"])
+        print(n[0], "maps and", n[1], "loop frames per full set of runs",
+              "(wide plan)" if want is WIDE else "(lean plan)")
     else:
-        main(workers=int(_arg("--workers", "1")), dest=_arg("--push"), key=_arg("--key"),
-             prune_only="--prune-only" in sys.argv, budget=int(_arg("--budget", BUDGET)))
+        main(workers=workers, dest=_arg("--push"), key=_arg("--key"),
+             prune_only="--prune-only" in sys.argv, budget=int(_arg("--budget", BUDGET)), want=want)
