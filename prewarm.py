@@ -224,7 +224,9 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
     # machine has delivered maps in the last half hour (mapsync-receive touches
     # this file), a lean pass stands down and leaves the one core to serving.
     alive = os.path.join(hr.CACHE_DIR, ".drawn-elsewhere")
-    if want is LEAN and os.path.exists(alive) and time.time() - os.path.getmtime(alive) < 1800:
+    stamps = [alive] + [os.path.join(hr.CACHE_DIR, n) for n in os.listdir(hr.CACHE_DIR)
+                        if n.startswith(".in.")]          # a delivery still arriving
+    if want is LEAN and any(os.path.exists(p) and time.time() - os.path.getmtime(p) < 1800 for p in stamps):
         print("another machine is drawing: pruned only")
         return
     start, drawn, missing = time.time(), 0, set()
