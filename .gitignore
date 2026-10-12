@@ -7,3 +7,4 @@ hrrr_data/
 *.grib2
 *.idx
 .DS_Store
+saved/

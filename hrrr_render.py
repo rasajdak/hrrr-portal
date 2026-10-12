@@ -37,6 +37,22 @@ from matplotlib.colors import ListedColormap, BoundaryNorm, Normalize
 
 import cartopy.crs as ccrs
 
+# The static maps are set in Barlow (labels, numbers) and Barlow Condensed (the
+# title): type drawn from highway signs and timetables, which is what a weather
+# chart is closer to than matplotlib's default DejaVu. Shipped in fonts/ so a
+# server needs nothing installed; DejaVu remains the fallback (and has "°").
+import logging
+from matplotlib import font_manager as _fm
+# the DejaVu fallback has no medium or semibold; findfont says so on every draw
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+_FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+if os.path.isdir(_FONT_DIR):
+    for _n in sorted(os.listdir(_FONT_DIR)):
+        if _n.endswith(".ttf"):
+            _fm.fontManager.addfont(os.path.join(_FONT_DIR, _n))
+    matplotlib.rcParams["font.family"] = ["Barlow", "DejaVu Sans"]
+TITLE_FONT = ["Barlow Condensed", "Barlow", "DejaVu Sans"]
+
 # cfgrib is imported lazily inside _message() so the module still imports for
 # introspection (e.g. /api/config) on a machine that hasn't installed it yet.
 
@@ -52,7 +68,7 @@ IMG_WIDTH = 2400  # px; height derived from the mercator aspect of EXTENT
 
 # Part of every cache key. Bump it when a colormap or the drawing changes, or a
 # PNG rendered the old way is served forever.
-RENDER_REV = "m6"
+RENDER_REV = "m8"
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -82,6 +98,7 @@ def _img_size():
 #             a loop never runs off the end of a half-uploaded run.
 #   stride  : grid downsample for the overlay
 #   url     : format string; {ymd} {hh} {fxx} {product}
+ECMWF_HOST = "https://storage.googleapis.com/ecmwf-open-data"
 MODELS = {
     "hrrr": dict(label="HRRR", name="HRRR 3 km", desc="High-Resolution Rapid Refresh · 3 km · hourly",
         cycle=1, max_fxx=18, step=1, probe=0, back=8, stride=2,
@@ -99,6 +116,14 @@ MODELS = {
         cycle=6, max_fxx=240, step=6, probe=240, back=5, stride=1,
         url="https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{ymd}/{hh}/atmos/"
             "gfs.t{hh}z.pgrb2.0p25.f{fxx:03d}"),
+    # ECMWF's open data. Its own index format (JSON lines, see _idx) and its own
+    # short names, so its fields are listed apart, in ECMWF below. Only the 00Z
+    # and 12Z runs go the full ten days. Read from Google's mirror: the AWS
+    # bucket answers 503 Slow Down to about one request in three.
+    "ecmwf": dict(label="ECMWF", name="ECMWF IFS 0.25°", desc="European model (IFS open data) · 0.25° · every 12 h, out 10 days",
+        cycle=12, max_fxx=240, step=6, probe=240, back=4, stride=1,
+        url=ECMWF_HOST + "/{ymd}/{hh}z/ifs/0p25/oper/"
+            "{ymd}{hh}0000-{fxx}h-oper-fc.grib2"),
 }
 ALL = ("hrrr", "nam", "rap", "gfs")
 MESO = ("hrrr", "nam", "rap")
@@ -131,7 +156,7 @@ QPF_COLORS = ["#c7f0b8", "#7fd67a", "#33a84a", "#1a7a3a", "#2b6fc4", "#58a8f0",
 ICE_LEVELS = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0]
 ICE_COLORS = ["#f9d5e5", "#f4a6c6", "#ec6fa6", "#d6398a", "#a61e7a", "#6d1466",
               "#3d0c4a"]
-PTYPE_CATS = ["Rain", "Freezing rain", "Sleet", "Snow"]
+PTYPE_CATS = ["Rain", "Freezing rain", "Sleet or mix", "Snow"]
 PTYPE_COLORS = ["#3fae49", "#f06292", "#9c5fd1", "#3d8bfd"]
 
 
@@ -149,6 +174,7 @@ PTYPE_COLORS = ["#3fae49", "#f06292", "#9c5fd1", "#3d8bfd"]
 #   ptype     : if set, the four categorical precip-type flags folded into one
 #   levels    : banded scale (with colors) instead of a continuous cmap
 #   mask_under: values below vmin render transparent (clean background); else clamped
+#   diff      : the model posts only running totals; subtract the last frame's
 #   accum     : the model posts only per-frame buckets; sum them into a run total
 #   weight    : a second message to multiply the first by (GFS snow, see below)
 #   min_fxx   : 1 means "not at hour 0" (an accumulation or an hourly maximum)
@@ -350,6 +376,41 @@ FIELDS = {
 }
 
 
+# What ECMWF calls each field, in its index: ":levtype:param:level:". It keeps
+# running totals only (no buckets), so a per-frame amount is this frame minus
+# the last (`diff`). Lengths are metres of water, not kg/m².
+M_SWE2SNOW = lambda a: a * 39.3701 * 10.0
+ECMWF = {
+    "t2m": dict(search=":sfc:2t:"),
+    "dpt2m": dict(search=":sfc:2d:"),
+    "wind10m": dict(search=":sfc:10u:", search_v=":sfc:10v:", wind=True),
+    "gust": dict(search=":sfc:10fg:"),
+    "mslp": dict(search=":sfc:msl:"),
+    "mucape": dict(search=":sfc:mucape:"),
+    "pwat": dict(search=":sfc:tcwv:"),
+    "tcdc": dict(search=":sfc:tcc:", conv=lambda a: a * 100.0),      # a 0-1 fraction
+    "apcp": dict(search=":sfc:tp:", diff=True, conv=M2IN),
+    "apcp_tot": dict(search=":sfc:tp:", conv=M2IN),
+    "prate": dict(search=":sfc:tprate:"),
+    "snow10": dict(search=":sfc:sf:", conv=M_SWE2SNOW),
+    "snow_step": dict(search=":sfc:sf:", diff=True, conv=M_SWE2SNOW),
+    "swe": dict(search=":sfc:sd:", conv=M2IN),
+    "ptype": dict(search=":sfc:ptype:", ptype="wmo"),
+    "h500": dict(search=":pl:gh:500:"),
+    "t850": dict(search=":pl:t:850:"),
+    "t500": dict(search=":pl:t:500:"),
+    "rh700": dict(search=":pl:r:700:"),
+    "w700": dict(search=":pl:w:700:"),
+    "wind250": dict(search=":pl:u:250:", search_v=":pl:v:250:"),
+    "wind850": dict(search=":pl:u:850:", search_v=":pl:v:850:"),
+}
+for _k, _o in ECMWF.items():
+    FIELDS[_k]["models"] = FIELDS[_k].get("models", ALL) + ("ecmwf",)
+    FIELDS[_k].setdefault("per", {})["ecmwf"] = _o
+# WMO precipitation-type codes -> rain 1, freezing rain 2, sleet or mix 3, snow 4
+WMO_PTYPE = {1: 1, 3: 2, 12: 2, 7: 3, 8: 3, 5: 4, 6: 4}
+
+
 def spec(field_key, model="hrrr"):
     """
     The field as one model carries it: per-model overrides applied and the
@@ -386,8 +447,13 @@ def field_catalog(model="hrrr"):
     return out
 
 
+def credit(model):
+    # ECMWF's open data is CC BY 4.0: the attribution is a condition of use
+    return "ECMWF IFS open data (CC BY 4.0)" if model == "ecmwf" else "NOAA " + MODELS[model]["label"].split()[0]
+
+
 def model_catalog():
-    return [dict(key=k, label=m["label"], name=m["name"], desc=m["desc"],
+    return [dict(key=k, label=m["label"], name=m["name"], desc=m["desc"], credit=credit(k),
                  max_fxx=m["max_fxx"], step=m["step"]) for k, m in MODELS.items()]
 
 
@@ -403,50 +469,78 @@ def _grib_url(model, product, run_dt, fxx):
         ymd=run_dt.strftime("%Y%m%d"), hh=run_dt.strftime("%H"), fxx=fxx, product=product)
 
 
-def _http(url, rng=None, timeout=60):
+def _http(url, rng=None, timeout=60, method="GET"):
     headers = {"User-Agent": "hrrr-portal"}
     if rng:
         headers["Range"] = "bytes=%d-%s" % (rng[0], "" if rng[1] is None else rng[1])
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
-        return r.read()
+    req = urllib.request.Request(url, headers=headers, method=method)
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            # a 503 Slow Down from a public bucket means "ask again"
+            if e.code not in (500, 503) or attempt == 4:
+                raise
+            time.sleep(0.8 * (attempt + 1))
+
+
+def _index_url(url):
+    if url.startswith(ECMWF_HOST):
+        return url[:-len(".grib2")] + ".index"
+    return url + ".idx"
 
 
 @functools.lru_cache(maxsize=64)
 def _idx(url):
-    """[(start_byte, line)] for every message in a GRIB file, from its sidecar."""
+    """
+    [(start_byte, end_byte, line)] for every message in a GRIB file, from its
+    sidecar. NCEP's is wgrib2 text ("n:start:d=...:VAR:level:..."), where a
+    message ends where the next begins; ECMWF's is a JSON object per message
+    with its offset and length, turned here into ":levtype:param:level:" so
+    one regex search serves both.
+    """
     try:
-        text = _http(url + ".idx", timeout=30).decode("utf-8", "replace")
+        text = _http(_index_url(url), timeout=30).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         if e.code in (403, 404):
             raise RuntimeError("that forecast hour is not posted yet")
         raise
-    rows = []
+    if url.startswith(ECMWF_HOST):
+        import json
+        rows = []
+        for line in text.splitlines():
+            if line.strip():
+                j = json.loads(line)
+                rows.append((j["_offset"], j["_offset"] + j["_length"] - 1,
+                             ":%s:%s:%s:" % (j.get("levtype"), j.get("param"), j.get("levelist", ""))))
+        return rows
+    raw = []
     for line in text.splitlines():
         parts = line.split(":", 2)
         if len(parts) == 3 and parts[1].isdigit():
-            rows.append((int(parts[1]), line))
-    return rows
+            raw.append((int(parts[1]), line))
+    starts = sorted({st for st, _ in raw})
+    # NAM and RAP pack U and V into one message (lines n.1 and n.2 share a
+    # start byte), so the end is the next start that lies further on.
+    nxt = {st: (starts[i + 1] - 1 if i + 1 < len(starts) else None) for i, st in enumerate(starts)}
+    return [(st, nxt[st], line) for st, line in raw]
 
 
 def _exists(url):
-    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "hrrr-portal"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return r.status == 200
+        _http(url, timeout=15, method="HEAD")
+        return True
     except Exception:
         return False
 
 
 def _locate(url, search):
-    """Byte range of the first message whose .idx line matches `search`."""
-    rows = _idx(url)
+    """Byte range of the first message whose index line matches `search`."""
     pat = re.compile(search)
-    for start, line in rows:
+    for start, end, line in _idx(url):
         if pat.search(line):
-            # NAM and RAP pack U and V into one message (lines n.1 and n.2 share
-            # a start byte), so the end is the next line that starts further on.
-            later = [s for s, _ in rows if s > start]
-            return start, (min(later) - 1 if later else None)
+            return start, end
     raise RuntimeError("field not in this file (%s)" % search.strip(":"))
 
 
@@ -585,6 +679,12 @@ def _fetch(f, model, run_dt, fxx):
         return _accumulate(f, model, run_dt, fxx)
     url = _grib_url(model, f.get("product", "sfc"), run_dt, fxx)
     fmt = dict(f=fxx, p=fxx - MODELS[model]["step"])
+    if f.get("ptype") == "wmo":
+        arrs, lat, lon = _one(model, url, f["search"])
+        out = np.zeros_like(arrs[0])
+        for code, ours in WMO_PTYPE.items():
+            out = np.where(np.rint(arrs[0]) == code, float(ours), out)
+        return out, lat, lon
     if f.get("ptype"):
         # rain, freezing rain, sleet, snow: later flags win where two are set
         out = lat = lon = None
@@ -602,6 +702,9 @@ def _fetch(f, model, run_dt, fxx):
             u = arrs[0]
             v = _one(model, url, f["search_v"].format(**fmt))[0][0]
         return np.hypot(u, v), lat, lon
+    if f.get("diff") and fmt["p"] > 0:
+        prev = _grib_url(model, f.get("product", "sfc"), run_dt, fmt["p"])
+        return np.maximum(arrs[0] - _one(model, prev, f["search"])[0][0], 0), lat, lon
     if f.get("weight"):
         return arrs[0] * _one(model, url, f["weight"].format(**fmt))[0][0], lat, lon
     return arrs[0], lat, lon
@@ -640,7 +743,7 @@ def latest_available_run(model="hrrr", max_age=240):
     found = None
     for b in range(0 if m["cycle"] > 1 else 1, m["back"] + 1):
         r = base - timedelta(hours=b * m["cycle"])
-        if _exists(_grib_url(model, "sfc", r, m["probe"]) + ".idx"):
+        if _exists(_index_url(_grib_url(model, "sfc", r, m["probe"]))):
             found = r
             break
     if found is None:
@@ -1082,31 +1185,31 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         shown = math.isfinite(v) and not (f.get("mask_under") and v < f["vmin"]) and not f.get("cats")
         if shown:
             ax.text(cx, cy + (y1 - y0) * 0.008, _fmt_value(v, f), ha="center", va="bottom",
-                    fontsize=12.5, fontweight="bold", color="#111", path_effects=halo, zorder=6)
+                    fontsize=14.5, fontweight="bold", color="#111", path_effects=halo, zorder=6)
         ax.text(cx, cy - (y1 - y0) * 0.009, name, ha="center", va="top",
-                fontsize=8, color="#222", path_effects=halo, zorder=6)
+                fontsize=9.5, fontweight="medium", color="#222", path_effects=halo, zorder=6)
 
     # ---- title block ----
     m = MODELS[model]
     unit = "" if f.get("cats") else " (%s)" % f["unit"]
-    fig.text(0.011, 0.972, "%s  ·  %s%s" % (m["name"], f["label"], unit),
-             fontsize=20, fontweight="bold", color="#111", va="top", ha="left")
-    fig.text(0.011, 0.932, _when(run_dt, fxx, reg["tz"]),
-             fontsize=12.5, color="#3a4048", va="top", ha="left")
-    fig.text(0.989, 0.972, "ryansajdak.com", fontsize=13, fontweight="bold",
-             color="#111", va="top", ha="right")
+    fig.text(0.011, 0.985, "%s  ·  %s%s" % (m["name"], f["label"], unit), fontfamily=TITLE_FONT,
+             fontsize=26, fontweight="semibold", color="#111", va="top", ha="left")
+    fig.text(0.011, 0.940, _when(run_dt, fxx, reg["tz"]),
+             fontsize=13, fontweight="medium", color="#3a4048", va="top", ha="left")
+    fig.text(0.989, 0.983, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=19,
+             fontweight="semibold", color="#111", va="top", ha="right")
     seen = vals[inview[sl]] if inview[sl].shape == vals.shape else vals
     seen = seen[np.isfinite(seen)]
     if seen.size and not f.get("cats"):
-        fig.text(0.989, 0.934, "Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"]),
-                 fontsize=12, color="#3a4048", va="top", ha="right")
+        fig.text(0.989, 0.940, "Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"]),
+                 fontsize=13, fontweight="medium", color="#3a4048", va="top", ha="right")
 
     # ---- colorbar ----
     cax = fig.add_axes([0.2, 0.036, 0.6, 0.018])
-    _colorbar(f, cax, "#222", "#444", 10)
+    _colorbar(f, cax, "#222", "#444", 11.5)
     if not f.get("cats"):
-        fig.text(0.192, 0.045, f["unit"], fontsize=11, color="#222", va="center", ha="right")
-    fig.text(0.989, 0.014, "Data: NOAA %s" % m["label"].split()[0], fontsize=8.5,
+        fig.text(0.192, 0.045, f["unit"], fontsize=12, fontweight="medium", color="#222", va="center", ha="right")
+    fig.text(0.989, 0.014, "Data: %s" % credit(model), fontsize=9.5,
              color="#666", va="bottom", ha="right")
 
     tmp = out_path + ".part"

@@ -6,6 +6,8 @@ Endpoints
   GET /api/config?model=      -> models, that model's fields and newest run, regions
   GET /api/overlay            -> rendered field PNG (query: model, field, run, fxx)
   GET /api/map                -> finished static map PNG (adds: region)
+  POST /api/save              -> keep one static map for good, under /saved/
+  GET /saved                  -> the kept maps, newest first
   GET /share                  -> a page around one static map, for posting a link
   GET /api/legend?field=...   -> colorbar PNG for a field
   GET /api/panel?lat=&lon=    -> every field a desk panel shows, in one object
@@ -15,6 +17,8 @@ Run:  python app.py           (dev server on http://127.0.0.1:8000)
 """
 
 import os
+import re
+import shutil
 import traceback
 import urllib.error
 import urllib.request
@@ -173,6 +177,79 @@ def static_map():
     resp = send_file(path, mimetype="image/png", max_age=86400,
                      as_attachment=request.args.get("dl") == "1", download_name=name)
     return resp
+
+
+# Kept maps. The render cache is keyed by hash and free to be emptied; a map
+# someone chose to keep is copied here under a name that says what it is, and
+# its URL then never changes or expires.
+SAVED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved")
+SAVED_MAX = 500
+_SAVED_NAME = re.compile(r"^([a-z]+)_([a-z0-9_]+)_(\d{10})_f(\d{3})_([a-z]+)\.png$")
+
+
+@app.route("/api/save", methods=["POST"])
+def save_map():
+    try:
+        model, field, run, fxx, region = _map_args()
+        path = hr.render_map(field, run, fxx, region, model)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        app.logger.error("save failed: %s\n%s", e, traceback.format_exc())
+        return jsonify(error="render failed: %s" % e), 502
+    os.makedirs(SAVED_DIR, exist_ok=True)
+    name = "%s_%s_%s_f%03d_%s.png" % (model, field, run.strftime("%Y%m%d%H"), fxx, region)
+    dest = os.path.join(SAVED_DIR, name)
+    if not os.path.exists(dest):
+        # anyone can press Save, so the shelf has an end
+        if len(os.listdir(SAVED_DIR)) >= SAVED_MAX:
+            return jsonify(error="the saved shelf is full (%d maps)" % SAVED_MAX), 507
+        shutil.copyfile(path, dest + ".part")
+        os.replace(dest + ".part", dest)
+    return jsonify(name=name, url="/saved/" + name)
+
+
+@app.route("/saved/<name>")
+def saved_file(name):
+    if not _SAVED_NAME.match(name):
+        return jsonify(error="no such map"), 404
+    return send_from_directory(SAVED_DIR, name, mimetype="image/png", max_age=86400)
+
+
+@app.route("/saved")
+@app.route("/saved/")
+def saved_index():
+    rows = []
+    if os.path.isdir(SAVED_DIR):
+        names = [n for n in os.listdir(SAVED_DIR) if _SAVED_NAME.match(n)]
+        names.sort(key=lambda n: os.path.getmtime(os.path.join(SAVED_DIR, n)), reverse=True)
+        for n in names:
+            model, field, run, fxx, region = _SAVED_NAME.match(n).groups()
+            try:
+                what = "%s %s, %s" % (hr.MODELS[model]["name"], hr.spec(field, model)["label"],
+                                      hr.REGIONS[region]["label"])
+                when = hr._when(datetime.strptime(run, "%Y%m%d%H").replace(tzinfo=timezone.utc),
+                                int(fxx), hr.REGIONS[region]["tz"]).replace("  ·  ", ", ")
+            except (KeyError, ValueError):
+                what, when = n, ""
+            rows.append("<a href='/saved/%s'><img loading=lazy src='/saved/%s' alt='%s'>"
+                        "<b>%s</b><span>%s</span></a>" % (n, n, escape(what), escape(what), escape(when)))
+    return Response(
+        "<!doctype html><html lang=en><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'><title>Saved maps</title>"
+        "<link rel=stylesheet href='https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600"
+        "&family=Barlow+Condensed:wght@600&display=swap'>"
+        "<style>body{margin:0;padding:18px;background:#0b1017;color:#e8eef6;font-family:Barlow,"
+        "Helvetica,Arial,sans-serif}h1{font:600 30px 'Barlow Condensed',Barlow,sans-serif;margin:0 0 4px}"
+        "p{color:#8ea3bd;margin:0 0 16px;font-size:14px}p a{color:#4ea3ff}"
+        ".g{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}"
+        ".g a{color:inherit;text-decoration:none;background:#131b26;border:1px solid #243244;"
+        "border-radius:10px;overflow:hidden;display:block}.g img{width:100%%;aspect-ratio:16/10;"
+        "display:block;background:#fff}.g b{display:block;padding:9px 11px 0;font-weight:600;font-size:15px}"
+        ".g span{display:block;padding:2px 11px 10px;color:#8ea3bd;font-size:13px}</style>"
+        "<h1>Saved maps</h1><p>%d kept. <a href='/'>Back to the maps</a></p><div class=g>%s</div></html>"
+        % (len(rows), "".join(rows) or "<p>Nothing saved yet.</p>"),
+        mimetype="text/html")
 
 
 @app.route("/share")

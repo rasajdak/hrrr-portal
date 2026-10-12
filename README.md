@@ -6,8 +6,10 @@ be saved and posted. It began as an HRRR viewer and still lives in a repo named
 for it.
 
 - **Models:** HRRR (3 km, hourly, 18 h), NAM CONUS nest (3 km, every 6 h, 60 h),
-  RAP (13 km, hourly, 21 h), GFS (0.25 degree, every 6 h, 10 days). All from
-  NOAA's public AWS buckets, no credentials. Add one in `MODELS`.
+  RAP (13 km, hourly, 21 h), GFS (0.25 degree, every 6 h, 10 days) from NOAA's
+  public AWS buckets, and ECMWF IFS (0.25 degree, 00Z and 12Z, 10 days) from the
+  open-data mirror on Google Cloud (the AWS one throttles with 503s). No
+  credentials anywhere. Add one in `MODELS`.
 - **Subsetting:** each GRIB's `.idx` sidecar gives every message's byte offset,
   so one HTTP Range request pulls **only the requested field** (~1 MB), not the
   ~150 MB file. This is done directly with urllib; Herbie is no longer used.
@@ -55,7 +57,8 @@ next deploy:
 - **Smoke (HRRR-Smoke)** — near-surface smoke · vertically-integrated smoke
 - **Upper air (pressure levels)** — 500 mb height · 850/500 mb temp · 700 mb RH · 700 mb vertical velocity · 250 mb (jet) & 850 mb wind speed
 
-Not every model carries every field: NAM has 45, RAP 41, GFS 35. A field's
+Not every model carries every field: NAM has 45, RAP 41, GFS 35, ECMWF 22 (its
+names and index format differ, so they sit in their own `ECMWF` table). A field's
 `models` says who has it and `per` holds the per-model differences (NAM and GFS
 call sea-level pressure `PRMSL`, and so on). Add more by extending `FIELDS` in
 `hrrr_render.py`.
@@ -71,7 +74,7 @@ Two things the files do not hand over directly:
 
 ## Static maps
 `/api/map` draws a finished 2400 x 1500 picture in a Lambert conformal fitted to
-one of 13 regions (`REGIONS`): land and water, state, county and national borders, a
+one of 13 regions (`REGIONS`), set in Barlow and Barlow Condensed (`fonts/`, OFL): land and water, state, county and national borders, a
 title with the valid time in the region's own time zone, the value at each city that fits, the maximum
 in view and a colorbar. Fields are smoothed by a Gaussian sized in sheet pixels
 (about 9 px), and banded ones are resampled finer and contoured, so nothing shows
@@ -155,6 +158,8 @@ visitor never waits:
 | `GET /api/config?model=` | models, that model's fields and latest run, regions |
 | `GET /api/overlay?model=&field=&run=&fxx=` | rendered field PNG |
 | `GET /api/map?model=&field=&run=&fxx=&region=` | finished static map PNG (`dl=1` to download) |
+| `POST /api/save?...` | copy that map to `saved/` under a readable name; returns its permanent URL |
+| `GET /saved` | gallery of kept maps (capped at 500; delete files from `saved/` to prune) |
 | `GET /share?...` | the static map on a page with link-preview tags |
 | `GET /api/point?model=&field=&run=&fxx=&lat=&lon=` | one grid-point value |
 | `GET /api/legend?model=&field=` | colorbar PNG |

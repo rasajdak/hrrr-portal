@@ -15,7 +15,7 @@ Environment=PORT=8000
 Environment=HOME=/opt/hrrr-portal
 # point this at the gunicorn inside your conda env (or venv)
 ExecStart=/opt/miniforge3/envs/hrrr-portal/bin/gunicorn \
-    --workers 2 --threads 2 --timeout 120 \
+    --workers 2 --threads 2 --timeout 300 \
     --bind 127.0.0.1:8000 app:app
 Restart=on-failure
 RestartSec=3
