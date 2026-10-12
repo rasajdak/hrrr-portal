@@ -74,7 +74,10 @@ $(printf '    <string>%s</string>\n' "${RUN[@]}")
   <key>StartInterval</key><integer>600</integer>
   <key>RunAtLoad</key><true/>
   <key>Nice</key><integer>10</integer>
-  <key>ProcessType</key><string>Background</string>
+  <!-- No ProcessType key, on purpose. "Background" puts the job in macOS's
+       throttled class: measured on the drawing Mac, six workers took 4 to 5
+       times longer on the clock for the same CPU time, and a pass drew 80 maps
+       instead of several hundred. Nice alone keeps it polite. -->
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict></plist>

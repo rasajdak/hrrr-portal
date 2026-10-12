@@ -60,10 +60,10 @@
   "use strict";
   var $=function(id){ return document.getElementById(id); };
   // Landscape: a title strip over the map. Vertical: the map fills the whole
-  // reel, with one block at the very top (the name, a large day and time, the
-  // legend) and a band of matching weight at the foot. The lower third of the
-  // map is left alone:
-  // the caption sits there, so nothing that matters is put in it.
+  // reel between two matching, centred bands: the name and a large day and
+  // time at the top, the legend and the site at the foot. An app's caption
+  // will sit over the foot band on a posted reel; the time, at the top, is the
+  // part that has to stay readable.
   var W=1920, H=1080, HEAD=75, MW=1920, MH=1005, TALL=false;
   try{ TALL=localStorage.getItem("loopshape")==="tall"; }catch(e){}
   function setShape(){
@@ -212,49 +212,43 @@
 
     var c=clock(min), total=META.minutes.length-1, at=total?Math.min(head,total)/total:0;
     if(TALL){
-      // One block at the very top: a large day and time (the thing a viewer has
-      // to read at a glance), then a thin row for the legend. The band runs from
-      // the top edge so no strip of map is stranded above it; the type starts
-      // lower, clear of the phone's own status bar and the app's small icons.
-      // Nothing else is laid over the map.
-      var ty=120, th=168, lh=64, fh=120;
-      ctx.fillStyle="rgba(15,23,35,.94)"; ctx.fillRect(0,0,W,ty+th+lh);
-      // the space above the time names the picture, so it is not a blank slab
-      ctx.textBaseline="middle"; ctx.textAlign="left"; ctx.fillStyle="#b9c8da";
-      ctx.font='600 40px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText("FUTURECAST RADAR", 24, ty-44);
-      ctx.textAlign="right"; ctx.font='500 34px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText(META.name, W-24, ty-44);
-      // and a band of the same weight closes the frame at the bottom
-      ctx.fillStyle="rgba(15,23,35,.94)"; ctx.fillRect(0,H-fh,W,fh);
-      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,H-fh,W,6);
-      ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 40px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText("ryansajdak.com", 24, H-fh/2+4);
-      ctx.textAlign="right"; ctx.fillStyle="#b9c8da"; ctx.font='500 30px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText("Data: "+META.credit, W-24, H-fh/2+4);
-      ctx.textBaseline="middle"; ctx.textAlign="left";
-      var big='600 132px "Barlow Condensed", Barlow, sans-serif';
-      ctx.font=big; var wDay=ctx.measureText(c.day).width;
-      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,ty,24+wDay+24,th);
-      ctx.fillStyle="#04121f"; ctx.fillText(c.day, 24, ty+th/2+6);
-      ctx.fillStyle="#fff"; ctx.fillText(c.time, 24+wDay+24+22, ty+th/2+6);
-      var wTime=ctx.measureText(c.time).width;
-      ctx.font='500 44px "Barlow Condensed", Barlow, sans-serif'; ctx.fillStyle="#b9c8da";
-      ctx.fillText(c.zone, 24+wDay+24+22+wTime+16, ty+th/2+34);
-      // legend row, with whose map this is at its right-hand end
-      var ly=ty+th, x=24;
-      ctx.fillStyle="rgba(255,255,255,.10)"; ctx.fillRect(0,ly,W,2);
+      // Two bands of the same height, top and bottom, each centred and each
+      // edged with the same accent line on its inner side: the name and a large
+      // day and time above (the thing a viewer has to read at a glance), the
+      // legend and whose map it is below. The map between them is left clear.
+      // Inside each band the text has the same space above it as below it.
+      var bh=276, by=H-bh, band="rgba(15,23,35,.95)";
+      ctx.fillStyle=band; ctx.fillRect(0,0,W,bh); ctx.fillRect(0,by,W,bh);
+      ctx.textBaseline="middle";
+      // top: name line, then the time, centred as one group
+      ctx.textAlign="center"; ctx.fillStyle="#b9c8da"; ctx.font='600 36px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("FUTURECAST RADAR  ·  "+META.name.toUpperCase(), W/2, 74);
+      var big='600 122px "Barlow Condensed", Barlow, sans-serif', zf='500 42px "Barlow Condensed", Barlow, sans-serif';
+      ctx.font=big; var wDay=ctx.measureText(c.day).width, wTime=ctx.measureText(c.time).width;
+      ctx.font=zf; var wZone=ctx.measureText(c.zone).width;
+      var chip=wDay+36, tw=chip+22+wTime+14+wZone, tx=(W-tw)/2, cy=160;
+      ctx.fillStyle="#4ea3ff"; rounded(tx,cy-56,chip,112,10); ctx.fill();
+      ctx.textAlign="left"; ctx.font=big;
+      ctx.fillStyle="#04121f"; ctx.fillText(c.day, tx+18, cy+6);
+      ctx.fillStyle="#fff"; ctx.fillText(c.time, tx+chip+22, cy+6);
+      ctx.font=zf; ctx.fillStyle="#b9c8da"; ctx.fillText(c.zone, tx+chip+22+wTime+14, cy+30);
+      // inner edges: progress along the top band's, a plain line along the bottom's
+      ctx.fillStyle="#243244"; ctx.fillRect(0,bh,W,8); ctx.fillRect(0,by-8,W,8);
+      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,bh,W*at,8); ctx.fillRect(0,by-8,W,8);
+      // bottom: the legend centred, then the name of the site, mirroring the top
+      ctx.font='600 30px Barlow, sans-serif';
+      var sw=26, gapG=36, widths=META.groups.map(function(g){ return ctx.measureText(g).width+12+6*sw; });
+      var lw=widths.reduce(function(a,b){return a+b;},0)+gapG*(widths.length-1), x=(W-lw)/2, ly=by+86;
       META.groups.forEach(function(g,n){
-        ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 26px Barlow, sans-serif';
-        ctx.fillText(g, x, ly+lh/2+2); x+=ctx.measureText(g).width+10;
-        for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[n*6+i]; ctx.fillRect(x+i*21, ly+lh/2-11, 22, 24); }
-        x+=6*21+26;
+        ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 30px Barlow, sans-serif';
+        ctx.fillText(g, x, ly+2); var gx=x+ctx.measureText(g).width+12;
+        for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[n*6+i]; ctx.fillRect(gx+i*sw, ly-14, sw+1, 30); }
+        x+=widths[n]+gapG;
       });
-      ctx.textAlign="right"; ctx.fillStyle="#fff"; ctx.font='600 32px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText("ryansajdak.com", W-24, ly+lh/2+2);
-      // where in the loop this is, along the foot of the block
-      ctx.fillStyle="#243244"; ctx.fillRect(0,ly+lh,W,8);
-      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,ly+lh,W*at,8);
+      ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font='600 52px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("ryansajdak.com", W/2, by+148);
+      ctx.fillStyle="#8ea3bd"; ctx.font='500 22px Barlow, sans-serif';
+      ctx.fillText("Data: "+META.credit, W/2, by+199);
       return;
     }
     // header
