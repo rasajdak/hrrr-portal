@@ -369,7 +369,7 @@ FIELDS = {
     # window runs, so the scale here is only the default: _field sets the real one.
     "arrival": dict(dict(group="Precipitation", label="When rain or snow arrives", unit="h",
         models=ALL + ("ecmwf",), product="sfc", arrival=True, search=":APCP:surface:" + BUCKET,
-        conv=None, mask_under=True, min_fxx=1), **_arrival_scale("hrrr", 18)),
+        conv=None, mask_under=True, min_fxx=1, rev="2"), **_arrival_scale("hrrr", 18)),
     "prate": dict(group="Precipitation", label="Precipitation rate", unit="mm/hr",
         product="sfc", search=":PRATE:surface:" + INST, conv=lambda a: a * 3600.0, cmap="YlGnBu",
         vmin=0.1, vmax=25, mask_under=True),
@@ -1423,7 +1423,10 @@ def _upsample(a, k):
 
 def map_path(model, field_key, run_dt, fxx, region, shape="wide"):
     """Where a static map lives in the cache, drawn or not."""
-    return _cache_path("map", MAP_REV, model, field_key, run_dt.strftime("%Y%m%d%H"),
+    # a field can carry its own `rev`, so a change to how one field is drawn
+    # does not throw away every other map on disk
+    return _cache_path("map", MAP_REV, model, field_key + FIELDS[field_key].get("rev", ""),
+                       run_dt.strftime("%Y%m%d%H"),
                        "%03d" % fxx, region + SHAPES[shape]["key"] + ("" if shape == "wide" else "+t3"))
 
 
@@ -1749,10 +1752,12 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         levels, colors, extend = bands
         k = int(min(12, max(1, round(900.0 / max(sv.shape)))))
         wet = _upsample(_smooth(np.isfinite(sv).astype("float32"), passes), k)
+        drawn = None
         if np.isfinite(sv).any():
             hour = _upsample(_smooth(_spread(np.maximum(sv, 0), passes + 3), passes), k)
             hour = np.where(wet >= 0.5, hour, np.nan)
-            ax.contourf(_upsample(sx, k), _upsample(sy, k), np.ma.masked_invalid(hour),
+            drawn = (_upsample(sx, k), _upsample(sy, k), hour)
+            ax.contourf(drawn[0], drawn[1], np.ma.masked_invalid(hour),
                         levels=levels, colors=colors, extend=extend, antialiased=False, zorder=2)
     elif typed:
         # Two things to smooth, and they cannot be smoothed as one number: the
@@ -1814,6 +1819,15 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         v = float(vals[i])
         if typed:
             v = v % 100
+        if arrival and not v < 0:
+            # The time printed is read off the smoothed picture, not the raw
+            # grid cell, so a city always agrees with the colour it sits on;
+            # cut back to the frame it falls in, which never leaves the band.
+            v = float("nan")
+            if drawn is not None:
+                j = np.unravel_index(int(np.argmin((drawn[0] - cx) ** 2 + (drawn[1] - cy) ** 2)), drawn[2].shape)
+                tick = 0.25 if model == "hrrr" else float(MODELS[model]["step"])
+                v = math.floor(float(drawn[2][j]) / tick + 1e-6) * tick if np.isfinite(drawn[2][j]) else v
         ax.plot(cx, cy, "o", ms=(4.2 if major else 3.0) * ts, color="#111", mec="white", mew=0.8, zorder=5)
         # no number where the field is blank there: under the bottom of a banded
         # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
