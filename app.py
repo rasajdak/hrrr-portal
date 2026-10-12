@@ -7,6 +7,7 @@ Endpoints
   GET /api/overlay            -> rendered field PNG (query: model, field, run, fxx)
   GET /api/map                -> finished static map PNG (adds: region)
   GET /api/ready?model=&run=  -> which static maps of that run are already drawn
+  GET /api/runs?model=        -> recent runs, newest first, for the run picker
   POST /api/save              -> keep one static map for good, under /saved/
   GET /saved                  -> the kept maps, newest first
   GET /loop                   -> the animated futurecast page
@@ -228,6 +229,15 @@ def loop_base():
         app.logger.error("loop base failed: %s\n%s", e, traceback.format_exc())
         return jsonify(error="layer failed: %s" % e), 502
     return send_file(path, mimetype="image/png", max_age=86400)
+
+
+@app.route("/api/runs")
+def runs():
+    """Recent runs of a model, newest first, for the page's run picker."""
+    try:
+        return jsonify(model=_model(), runs=hr.recent_runs(_model()))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
 
 
 @app.route("/api/ready")

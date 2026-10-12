@@ -211,6 +211,7 @@ what exists) or switched to `prewarm.py --prune-only`.
 | `GET /api/loop?model=&region=` | its run, frame times and palette |
 | `GET /api/loop/frame?model=&run=&m=&region=` | one forecast time as a data PNG |
 | `GET /api/loop/base?region=&layer=` | a region's base or label layer |
+| `GET /api/runs?model=` | recent runs, newest first, with how many maps each has drawn (the page's run picker) |
 | `POST /api/save?...` | copy that map to `saved/` under a readable name; returns its permanent URL |
 | `GET /saved` | gallery of kept maps (capped at 500; delete files from `saved/` to prune) |
 | `GET /share?...` | the static map on a page with link-preview tags |

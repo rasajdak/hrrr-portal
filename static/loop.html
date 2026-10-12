@@ -212,7 +212,7 @@
 
     var c=clock(min), total=META.minutes.length-1, at=total?Math.min(head,total)/total:0;
     if(TALL){
-      // Two bands of the same height, top and bottom, each centred and each
+      // Two bands of the same height, top and bottom, each set from the left and each
       // edged with the same accent line on its inner side: the name and a large
       // day and time above (the thing a viewer has to read at a glance), the
       // legend and whose map it is below. The map between them is left clear.
@@ -221,12 +221,13 @@
       ctx.fillStyle=band; ctx.fillRect(0,0,W,bh); ctx.fillRect(0,by,W,bh);
       ctx.textBaseline="middle";
       // top: name line, then the time, centred as one group
-      ctx.textAlign="center"; ctx.fillStyle="#b9c8da"; ctx.font='600 36px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText("FUTURECAST RADAR  ·  "+META.name.toUpperCase(), W/2, 74);
+      var L=36;                                           // everything in both bands starts on this left edge
+      ctx.textAlign="left"; ctx.fillStyle="#b9c8da"; ctx.font='600 36px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("FUTURECAST RADAR  ·  "+META.name.toUpperCase(), L, 74);
       var big='600 122px "Barlow Condensed", Barlow, sans-serif', zf='500 42px "Barlow Condensed", Barlow, sans-serif';
       ctx.font=big; var wDay=ctx.measureText(c.day).width, wTime=ctx.measureText(c.time).width;
       ctx.font=zf; var wZone=ctx.measureText(c.zone).width;
-      var chip=wDay+36, tw=chip+22+wTime+14+wZone, tx=(W-tw)/2, cy=160;
+      var chip=wDay+36, tw=chip+22+wTime+14+wZone, tx=L, cy=160;
       ctx.fillStyle="#4ea3ff"; rounded(tx,cy-56,chip,112,10); ctx.fill();
       ctx.textAlign="left"; ctx.font=big;
       ctx.fillStyle="#04121f"; ctx.fillText(c.day, tx+18, cy+6);
@@ -238,17 +239,17 @@
       // bottom: the legend centred, then the name of the site, mirroring the top
       ctx.font='600 30px Barlow, sans-serif';
       var sw=26, gapG=36, widths=META.groups.map(function(g){ return ctx.measureText(g).width+12+6*sw; });
-      var lw=widths.reduce(function(a,b){return a+b;},0)+gapG*(widths.length-1), x=(W-lw)/2, ly=by+86;
+      var lw=widths.reduce(function(a,b){return a+b;},0)+gapG*(widths.length-1), x=L, ly=by+86;
       META.groups.forEach(function(g,n){
         ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 30px Barlow, sans-serif';
         ctx.fillText(g, x, ly+2); var gx=x+ctx.measureText(g).width+12;
         for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[n*6+i]; ctx.fillRect(gx+i*sw, ly-14, sw+1, 30); }
         x+=widths[n]+gapG;
       });
-      ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font='600 52px "Barlow Condensed", Barlow, sans-serif';
-      ctx.fillText("ryansajdak.com", W/2, by+148);
+      ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 52px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("ryansajdak.com", L, by+148);
       ctx.fillStyle="#8ea3bd"; ctx.font='500 22px Barlow, sans-serif';
-      ctx.fillText("Data: "+META.credit, W/2, by+199);
+      ctx.fillText("Data: "+META.credit, L, by+199);
       return;
     }
     // header
@@ -314,7 +315,7 @@
       else if(wantVideo) $("rec").textContent="Video starts when loaded (cancel)";
       $("note").textContent=loaded<META.minutes.length ? "loading weather "+loaded+" of "+META.minutes.length
         : recorder ? "recording the whole loop, it saves itself at the end"
-        : savedNote || ("run "+META.run.slice(8)+"Z, "+META.minutes.length+" times");
+        : savedNote || (new Date(META.run_iso).toLocaleString("en-US",{timeZone:"America/New_York",weekday:"short",hour:"numeric",timeZoneName:"short"})+" run ("+META.run.slice(8)+"Z), "+META.minutes.length+" times");
     }
     draw();
   }

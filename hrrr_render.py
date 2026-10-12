@@ -1189,13 +1189,33 @@ def render_map(field_key, run_dt, fxx, region="conus", model="hrrr"):
     return out_path
 
 
-def ready_maps(model, run_dt):
+def recent_runs(model, count=None):
+    """
+    The newest posted run and the ones before it, newest first, each with how
+    many of its static maps are already drawn: what a run picker lists. Earlier
+    runs are not probed; NOAA and ECMWF keep them far longer than this reaches.
+    """
+    m = MODELS[model]
+    count = count or {1: 12, 6: 6, 12: 4}.get(m["cycle"], 6)
+    latest = latest_available_run(model)
+    have = set(os.listdir(CACHE_DIR))
+    out = []
+    for k in range(count):
+        r = latest - timedelta(hours=k * m["cycle"])
+        ready = ready_maps(model, r, have)
+        out.append(dict(run=r.strftime("%Y%m%d%H"), iso=r.strftime("%Y-%m-%dT%H:00:00Z"),
+                        ready=sum(len(h) for f in ready.values() for h in f.values())))
+    return out
+
+
+def ready_maps(model, run_dt, have=None):
     """
     {field: {region: [hours]}} for the static maps of one run that are already
     drawn, so the page can show what opens at once. One directory listing and a
     hash per candidate; nothing is fetched or rendered.
     """
-    have = set(os.listdir(CACHE_DIR))
+    if have is None:
+        have = set(os.listdir(CACHE_DIR))
     m = MODELS[model]
     out = {}
     for f in field_catalog(model):

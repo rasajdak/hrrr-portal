@@ -62,6 +62,8 @@
   #legcustom .note{font-size:11px;color:var(--muted);line-height:1.4}
 
   #opwrap{display:flex;align-items:center;gap:8px} #opwrap input[type=range]{width:90px;flex:none}
+  #runwrap select{font-variant-numeric:tabular-nums}
+  #runwrap button.icon{width:28px;height:30px;font-size:15px}
   .pill{font-size:10.5px;color:var(--accent2);border:1px solid rgba(51,214,159,.35);background:rgba(51,214,159,.08);
     padding:3px 8px;border-radius:20px;white-space:nowrap}
   #status{position:absolute;top:58px;left:50%;transform:translateX(-50%);z-index:1200;background:rgba(19,27,38,.96);
@@ -139,7 +141,13 @@
   <div class="group" id="opwrap"><label>Opacity</label><input type="range" id="opacity" min="20" max="100" value="82" /></div>
   <button id="sharebtn" title="Switch between the finished map image and the live, zoomable map">Live map</button>
   <a class="btn" id="looplink" href="/loop" title="The animated futurecast: radar by precipitation type, in motion">Loop</a>
-  <span class="pill" id="runpill">connecting…</span>
+  <div class="group" id="runwrap" title="Which model run you are looking at. Times are Eastern. A dot marks a run with maps already drawn.">
+    <label for="runsel">Run</label>
+    <button class="icon" id="runolder" title="The run before this one">‹</button>
+    <select id="runsel"><option>connecting…</option></select>
+    <button class="icon" id="runnewer" title="The run after this one">›</button>
+  </div>
+  <span class="pill" id="runpill"></span>
 </div>
 
 <div id="share">
@@ -282,13 +290,20 @@
   function pad(h){ return (h<10?"0":"")+h; }
 
   // run is 'YYYYMMDDHH' in UTC -> Date of the init time
+  // Every time on the page is Eastern, whatever the viewer's own clock says.
+  var ET="America/New_York";
+  function etTime(d){ return d.toLocaleString("en-US",{timeZone:ET,weekday:"short",hour:"numeric",minute:"2-digit",timeZoneName:"short"}); }
+  function etRun(iso){            // "Mon 3 PM EDT (19Z)"
+    var d=new Date(iso);
+    return d.toLocaleString("en-US",{timeZone:ET,weekday:"short",hour:"numeric",timeZoneName:"short"})+" ("+("0"+d.getUTCHours()).slice(-2)+"Z)";
+  }
   function runDate(){
     return new Date(Date.UTC(+run.slice(0,4), +run.slice(4,6)-1, +run.slice(6,8), +run.slice(8,10)));
   }
   function validDate(f){ return new Date(runDate().getTime()+(f===undefined?fxx:f)*3600000); }
   function updateHeader(){
     var vd=validDate();
-    $("validloc").textContent=vd.toLocaleString([], {weekday:"short",hour:"numeric",minute:"2-digit"});
+    $("validloc").textContent=etTime(vd);
     $("validutc").textContent=("0"+vd.getUTCHours()).slice(-2)+"Z";
     $("lead").innerHTML="F+"+pad(fxx)+' <span>lead time</span>';
     $("fhr").textContent=fxx; $("slider").value=fxx;
@@ -418,7 +433,7 @@
   }
   function updateRadarHeader(){
     var d=radarTimes[radarIdx].date, ago=Math.round((Date.now()-d.getTime())/60000);
-    $("validloc").textContent=d.toLocaleString([], {weekday:"short",hour:"numeric",minute:"2-digit"});
+    $("validloc").textContent=etTime(d);
     $("validutc").textContent=("0"+d.getUTCHours()).slice(-2)+("0"+d.getUTCMinutes()).slice(-2)+"Z";
     $("lead").innerHTML=(radarIdx===radarTimes.length-1?"LATEST":("−"+ago+"m"))+' <span>radar</span>';
     $("fhr").textContent=radarIdx; $("slider").value=radarIdx;
@@ -579,6 +594,44 @@
     };
     pre.src=url;
   }
+  // ---- which run ----
+  // RUNS is the model's recent runs, newest first. The picker names each by its
+  // Eastern start time, and the arrows step to the run before or after.
+  var RUNS=[];
+  function loadRuns(){
+    var m=MODEL;
+    return fetch("/api/runs?model="+m).then(function(x){ return x.json(); }).then(function(j){
+      if(m!==MODEL||!j.runs) return;
+      RUNS=j.runs; showRun();
+    }).catch(function(){});
+  }
+  function showRun(){
+    var sel=$("runsel"); if(!RUNS.length||!run) return;
+    sel.innerHTML="";
+    if(!RUNS.some(function(r){ return r.run===run; }))        // a run older than the list reaches
+      RUNS.push({run:run, iso:run.slice(0,4)+"-"+run.slice(4,6)+"-"+run.slice(6,8)+"T"+run.slice(8,10)+":00:00Z", ready:0});
+    RUNS.forEach(function(r,i){
+      var o=document.createElement("option"); o.value=r.run;
+      o.textContent=(r.ready?"● ":"")+etRun(r.iso)+(i===0?"  newest":"");
+      sel.appendChild(o);
+    });
+    sel.value=run;
+    var at=RUNS.findIndex(function(r){ return r.run===run; });
+    $("runolder").disabled=at>=RUNS.length-1; $("runnewer").disabled=at<=0;
+    if(at===0) $("runpill").textContent="";
+    $("runpill").style.display=$("runpill").textContent?"":"none";
+  }
+  function setRun(r){
+    if(!r||r===run) return;
+    stop(); run=r; READY={}; prefetched=false;
+    $("runpill").textContent="";
+    showRun();
+    loadReady(false).then(function(){ setField(field); });
+  }
+  $("runsel").addEventListener("change",function(e){ setRun(e.target.value); });
+  $("runolder").addEventListener("click",function(){ var at=RUNS.findIndex(function(r){ return r.run===run; }); if(at<RUNS.length-1) setRun(RUNS[at+1].run); });
+  $("runnewer").addEventListener("click",function(){ var at=RUNS.findIndex(function(r){ return r.run===run; }); if(at>0) setRun(RUNS[at-1].run); });
+
   // ---- what is already drawn ----
   // READY[field][region] = [hours]. Asked of the server per model run, and
   // added to here as maps are drawn in this session.
@@ -597,8 +650,9 @@
       if(m!==MODEL||r!==run||!j.ready) return;
       if(free&&j.run!==run){
         run=j.run;
-        $("runpill").textContent="run "+j.run_label+" (newer run still drawing)";
+        $("runpill").textContent="newest run still drawing";
       }
+      showRun();
       READY=j.ready; showReady();
     }).catch(function(){});
   }
@@ -630,7 +684,7 @@
     try{ localStorage.setItem("readyonly",e.target.checked?"1":"0"); }catch(err){}
     if(onlyReady()) setFxx(fxx);
   });
-  setInterval(function(){ if(CFG&&MODE==="static") loadReady(); },120000);   // the server keeps drawing
+  setInterval(function(){ if(CFG&&MODE==="static"){ loadReady(); loadRuns(); } },120000);   // the server keeps drawing
 
   function fitShare(){              // the bar wraps on a narrow screen
     $("share").style.top=$("bar").offsetHeight+"px";
@@ -688,7 +742,8 @@
       var me=cfg.models.find(function(x){return x.key===MODEL;});
       $("modeldesc").textContent=me.desc+" · raw GRIB2";
       $("credit").textContent="Data: "+me.credit+" via AWS Open Data · rendered from raw GRIB2";
-      $("runpill").textContent="run "+cfg.latest_run_label;
+      $("runpill").textContent=""; RUNS=[];
+      loadRuns();
       $("slider").max=cfg.max_fxx; $("fmax").textContent=cfg.max_fxx;
       if(first){
         cfg.models.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("model").appendChild(o); });
@@ -729,7 +784,7 @@
   status("loading configuration…");
   loadModel("hrrr",true).catch(function(){
     status("⚠ cannot reach backend. Start it with:  python app.py",true);
-    $("runpill").textContent="offline";
+    $("runpill").textContent="offline"; $("runpill").style.display="";
   });
 })();
 </script>
