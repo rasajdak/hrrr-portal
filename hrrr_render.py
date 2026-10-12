@@ -1091,9 +1091,11 @@ _MAP_AX = [0.0, 0.072, 1.0, 0.838]          # the map itself, as a figure fracti
 #   tall   : 9:16, for a story or reel. Dark bands top and bottom, like the
 #            animated loop's, with the text set from the left.
 SHAPES = {
-    "wide":   dict(w=MAP_W, h=MAP_H, ax=_MAP_AX, key=""),
-    "square": dict(w=2160, h=2160, ax=[0.0, 0.064, 1.0, 0.868], key="@sq"),
-    "tall":   dict(w=1620, h=2880, ax=[0.0, 0.144, 1.0, 0.712], key="@pt"),
+    # type: how much larger the lettering is set than on the wide sheet. The
+    # square and tall sheets are read on a phone, a fraction of their size.
+    "wide":   dict(w=MAP_W, h=MAP_H, ax=_MAP_AX, key="", type=1.0),
+    "square": dict(w=2160, h=2160, ax=[0.0, 0.064, 1.0, 0.868], key="@sq", type=1.22),
+    "tall":   dict(w=1620, h=2880, ax=[0.0, 0.144, 1.0, 0.712], key="@pt", type=1.4),
 }
 
 
@@ -1197,7 +1199,7 @@ def _upsample(a, k):
 def map_path(model, field_key, run_dt, fxx, region, shape="wide"):
     """Where a static map lives in the cache, drawn or not."""
     return _cache_path("map", MAP_REV, model, field_key, run_dt.strftime("%Y%m%d%H"),
-                       "%03d" % fxx, region + SHAPES[shape]["key"])
+                       "%03d" % fxx, region + SHAPES[shape]["key"] + ("" if shape == "wide" else "+t3"))
 
 
 def render_map(field_key, run_dt, fxx, region="conus", model="hrrr", shape="wide"):
@@ -1402,10 +1404,12 @@ def frame(region):
 
 
 @_locked
-def city_labels(region, limit=22):
+def city_labels(region, limit=22, room=1.0):
     """
     [(name, x, y, major)] for the cities a region's map has room for, in map
     coordinates: taken in priority order, dropping any that would collide.
+    `room` widens the space each label is given, for sheets that set their type
+    larger (the ones made for a phone).
     """
     proj, x0, x1, y0, y1 = frame(region)
     cxy = proj.transform_points(ccrs.PlateCarree(), np.array([c[2] for c in CITIES]),
@@ -1413,7 +1417,7 @@ def city_labels(region, limit=22):
     kept = []
     # a label block is about this wide (an upright frame is narrow, so there the
     # room is reckoned from its height)
-    gap = 0.085 * max(x1 - x0, 0.9 * (y1 - y0))
+    gap = 0.085 * room * max(x1 - x0, 0.9 * (y1 - y0))
     mx, my = (x1 - x0) * 0.03, (y1 - y0) * 0.04
     for rank, ((name, _, _), (cx, cy, _)) in enumerate(zip(CITIES, cxy)):
         if not (x0 + mx < cx < x1 - mx and y0 + my < cy < y1 - my):
@@ -1454,6 +1458,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     sheet = SHAPES[shape]
     region += sheet["key"]                    # the region as this shape frames it
     dark = shape == "tall"                    # bands like the loop's, light text
+    ts = sheet["type"]                        # lettering scale for this sheet
     proj, x0, x1, y0, y1 = frame(region)
 
     # Project the grid ourselves and hand matplotlib plain x/y: quicker than
@@ -1557,25 +1562,26 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     halo = [pe.withStroke(linewidth=2.6, foreground="white")]
 
     # ---- city values ----
-    cities = city_labels(region)
+    cities = city_labels(region, room=ts)
+    off = 0.6 if dark else 1.0                # the tall map is long: offsets are fractions of its height
     for name, cx, cy, major in cities:
         i = np.unravel_index(int(np.argmin((gx - cx) ** 2 + (gy - cy) ** 2)), gx.shape)
         v = float(vals[i])
-        ax.plot(cx, cy, "o", ms=4.2 if major else 3.0, color="#111", mec="white", mew=0.8, zorder=5)
+        ax.plot(cx, cy, "o", ms=(4.2 if major else 3.0) * ts, color="#111", mec="white", mew=0.8, zorder=5)
         # no number where the field is blank there: under the bottom of a banded
         # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
         blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
         shown = math.isfinite(v) and not blank and not f.get("cats") and not f.get("radar_ptype")
         if shown:
-            ax.text(cx, cy + (y1 - y0) * 0.012, _fmt_value(v, f), ha="center", va="bottom",
-                    fontsize=14.5, fontweight="bold", color="#111", path_effects=halo, zorder=6)
-        ax.text(cx, cy - (y1 - y0) * 0.012, name, ha="center", va="top",
-                fontsize=11 if major else 9, fontweight="semibold" if major else "medium",
+            ax.text(cx, cy + (y1 - y0) * 0.012 * off, _fmt_value(v, f), ha="center", va="bottom",
+                    fontsize=14.5 * ts, fontweight="bold", color="#111", path_effects=halo, zorder=6)
+        ax.text(cx, cy - (y1 - y0) * 0.012 * off, name, ha="center", va="top",
+                fontsize=(11 if major else 9) * ts, fontweight="semibold" if major else "medium",
                 color="#111" if major else "#2b2b2b", path_effects=halo, zorder=6)
 
     # ---- water names (regional maps), wherever no city label already sits ----
     for name, cx, cy in water_labels(region, cities):
-        ax.text(cx, cy, name.upper(), ha="center", va="center", fontsize=9.5, fontweight="medium",
+        ax.text(cx, cy, name.upper(), ha="center", va="center", fontsize=9.5 * ts, fontweight="medium",
                 color="#4f7391", alpha=0.9, zorder=4,
                 path_effects=[pe.withStroke(linewidth=2.2, foreground="white", alpha=0.7)])
 
@@ -1591,27 +1597,27 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         # the text as below it: the arrangement settled on for the loop's reel.
         valid = run_dt + timedelta(hours=fxx)
         L, top = 0.034, 1.0 - 0.144
-        fig.text(L, top + 0.113, m["name"].upper(), fontfamily=TITLE_FONT, fontsize=19,
+        fig.text(L, top + 0.119, m["name"].upper(), fontfamily=TITLE_FONT, fontsize=25,
                  fontweight="semibold", color="#b9c8da", va="center", ha="left")
-        fig.text(L, top + 0.080, "%s%s" % (f["label"], unit), fontfamily=TITLE_FONT, fontsize=32,
+        fig.text(L, top + 0.084, "%s%s" % (f["label"], unit), fontfamily=TITLE_FONT, fontsize=40,
                  fontweight="semibold", color="white", va="center", ha="left")
-        fig.text(L, top + 0.036, _clock(valid, reg["tz"]), fontfamily=TITLE_FONT, fontsize=36,
+        fig.text(L, top + 0.036, _clock(valid, reg["tz"]), fontfamily=TITLE_FONT, fontsize=50,
                  fontweight="semibold", color="#4ea3ff", va="center", ha="left")
-        fig.text(1 - L, top + 0.113, "hour %d of the %s run" % (fxx, _clock(run_dt, reg["tz"])),
-                 fontsize=11.5, fontweight="medium", color="#8ea3bd", va="center", ha="right")
-        cax = fig.add_axes([L, 0.092, 1 - 2 * L, 0.013])
-        _colorbar(f, cax, "#dfe8f3", "#33465e", 11)
-        fig.text(L, 0.118, peak or ("" if plain else f["unit"]), fontsize=11.5, fontweight="medium",
+        fig.text(1 - L, top + 0.119, "hour %d of the %s run" % (fxx, _clock(run_dt, reg["tz"])),
+                 fontsize=14.5, fontweight="medium", color="#8ea3bd", va="center", ha="right")
+        cax = fig.add_axes([L, 0.088, 1 - 2 * L, 0.014])
+        _colorbar(f, cax, "#dfe8f3", "#33465e", 15)
+        fig.text(L, 0.121, peak or ("" if plain else f["unit"]), fontsize=16, fontweight="medium",
                  color="#b9c8da", va="center", ha="left")
-        fig.text(L, 0.040, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=27,
+        fig.text(L, 0.034, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=36,
                  fontweight="semibold", color="white", va="center", ha="left")
-        fig.text(1 - L, 0.040, "Data: %s" % credit(model), fontsize=10.5,
+        fig.text(1 - L, 0.034, "Data: %s" % credit(model), fontsize=13.5,
                  color="#8ea3bd", va="center", ha="right")
     else:
-        k = 1.0 if shape == "wide" else 0.94          # the square sheet is a little narrower
-        fig.text(0.011, 0.985, "%s  ·  %s%s" % (m["name"], f["label"], unit), fontfamily=TITLE_FONT,
-                 fontsize=26 * k, fontweight="semibold", color="#111", va="top", ha="left")
-        sub = 0.940 if shape == "wide" else 0.951
+        k = 1.0 if shape == "wide" else 1.12          # the square sheet is read on a phone
+        fig.text(0.011, 0.985 if shape == "wide" else 0.993, "%s  ·  %s%s" % (m["name"], f["label"], unit),
+                 fontfamily=TITLE_FONT, fontsize=26 * k, fontweight="semibold", color="#111", va="top", ha="left")
+        sub = 0.940 if shape == "wide" else 0.952
         fig.text(0.011, sub, _when(run_dt, fxx, reg["tz"]),
                  fontsize=13 * k, fontweight="medium", color="#3a4048", va="top", ha="left")
         fig.text(0.989, 0.983, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=19,
@@ -1623,7 +1629,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         # ---- colorbar ----
         cy = 0.036 if shape == "wide" else 0.034
         cax = fig.add_axes([0.2, cy, 0.6, 0.018 if shape == "wide" else 0.012])
-        _colorbar(f, cax, "#222", "#444", 11.5)
+        _colorbar(f, cax, "#222", "#444", 11.5 * (1.0 if shape == "wide" else 1.2))
         if not plain:
             fig.text(0.192, cy + 0.009 if shape == "wide" else cy + 0.006, f["unit"], fontsize=12,
                      fontweight="medium", color="#222", va="center", ha="right")
