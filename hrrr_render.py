@@ -1024,7 +1024,7 @@ CITIES = [
 MAP_W, MAP_H, MAP_DPI = 2400, 1500, 150
 # The look of the sheet. Bump when it changes; every static map is then redrawn
 # (overlay PNGs for the live map are keyed without it and stay).
-MAP_REV = "s3"
+MAP_REV = "s4"
 WATER, LAND, INK = "#c9d8e4", "#efece5", "#2a2f36"
 
 # Named on regional maps, where a lake is half the picture.
@@ -1188,8 +1188,77 @@ def ready_maps(model, run_dt):
     return out
 
 
-def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
+BASE_REV = "b1"
+_BASE = {}              # region -> {layer: [geometries in map coordinates]}
+
+
+def _basemap(region, proj, x0, x1, y0, y1):
+    """
+    Land, lakes, borders, roads and counties for one region, already projected
+    into the map's coordinates and clipped to its frame.
+
+    Projecting a continent's coastline is by far the slowest step of a map, and
+    a region's frame never changes, so it is done once and pickled. Every map
+    after that, in every process, just draws the stored shapes.
+    """
+    if region in _BASE:
+        return _BASE[region]
+    import pickle
+    path = os.path.join(CACHE_DIR, "geo", "base_%s_%s.pkl" % (region, BASE_REV))
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as fh:
+                _BASE[region] = pickle.load(fh)
+            return _BASE[region]
+        except Exception:
+            pass                                          # half-written: rebuild
     import cartopy.feature as cfeature
+    import shapely.geometry as sg
+    w, e, s, n = REGIONS[region]["box"]
+    pc = ccrs.PlateCarree()
+    res = "10m" if (e - w) < 14 else "50m"
+    regional, close = (e - w) < 22, (e - w) < 10
+    view = sg.box(x0 - (x1 - x0) * 0.02, y0 - (y1 - y0) * 0.02,
+                  x1 + (x1 - x0) * 0.02, y1 + (y1 - y0) * 0.02)
+    lw, le, ls, ln = w - 9, e + 9, s - 6, n + 6           # the frame is wider than the box
+
+    def layer(geoms):
+        out = []
+        for g in geoms:
+            if g is None:
+                continue
+            b = g.bounds
+            if b[2] < lw or b[0] > le or b[3] < ls or b[1] > ln:
+                continue
+            try:
+                p = proj.project_geometry(g, pc).intersection(view)
+            except Exception:
+                continue
+            if not p.is_empty:
+                out.extend(q for q in getattr(p, "geoms", [p])
+                           if not q.is_empty and q.geom_type != "Point")
+        return out
+
+    ne = lambda cat, name: cfeature.NaturalEarthFeature(cat, name, res).geometries()
+    base = dict(
+        land=layer(ne("physical", "land")),
+        lakes=layer(ne("physical", "lakes")),
+        coast=layer(ne("physical", "coastline")),
+        states=layer(ne("cultural", "admin_1_states_provinces_lines")),
+        borders=layer(ne("cultural", "admin_0_boundary_lines_land")),
+        roads=layer(_road_shapes(lw, le, ls, ln, major_only=not close)),
+        counties=layer(_county_shapes(lw, le, ls, ln)) if regional else [],
+    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.part" % (path, os.getpid())
+    with open(tmp, "wb") as fh:
+        pickle.dump(base, fh, protocol=4)
+    os.replace(tmp, path)
+    _BASE[region] = base
+    return base
+
+
+def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
 
     reg = REGIONS[region]
     w, e, s, n = reg["box"]
@@ -1233,11 +1302,14 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     ax.set_ylim(y0, y1)
     ax.set_facecolor(WATER)                           # open water
 
-    res = "10m" if (e - w) < 14 else "50m"
-    ax.add_feature(cfeature.NaturalEarthFeature("physical", "land", res),
-                   facecolor=LAND, edgecolor="none", zorder=1)
-    ax.add_feature(cfeature.NaturalEarthFeature("physical", "lakes", res),
-                   facecolor=WATER, edgecolor="none", zorder=1)
+    base = _basemap(region, proj, x0, x1, y0, y1)
+
+    def put(name, **kw):
+        if base[name]:
+            ax.add_geometries(base[name], crs=proj, **kw)
+
+    put("land", facecolor=LAND, edgecolor="none", zorder=1)
+    put("lakes", facecolor=WATER, edgecolor="none", zorder=1)
     # Shaded terrain, firmly on the bare land here and again, faintly, over the
     # weather further down. A map without it still draws.
     try:
@@ -1296,21 +1368,13 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     # highways: the lines people actually navigate by, under the borders
     # (secondary ones too, once the map is close enough to have room for them)
     close = (e - w) < 10
-    ax.add_geometries(_road_shapes(w - 4, e + 4, s - 3, n + 3, major_only=not close), crs=pc,
-                      facecolor="none", edgecolor="#5a4632", linewidth=0.75 if close else 0.5,
-                      alpha=0.5 if close else 0.4, zorder=2.8)
-    ax.add_feature(cfeature.NaturalEarthFeature("physical", "lakes", res),
-                   facecolor="none", edgecolor=line, linewidth=0.5, zorder=3)
-    ax.add_feature(cfeature.NaturalEarthFeature("physical", "coastline", res),
-                   facecolor="none", edgecolor=line, linewidth=0.6, zorder=3)
-    ax.add_feature(cfeature.NaturalEarthFeature(
-        "cultural", "admin_1_states_provinces_lines", res),
-        facecolor="none", edgecolor=line, linewidth=0.55, zorder=3)
-    ax.add_feature(cfeature.NaturalEarthFeature("cultural", "admin_0_boundary_lines_land", res),
-                   facecolor="none", edgecolor=line, linewidth=0.9, zorder=3)
-    if regional:
-        ax.add_geometries(_county_shapes(w - 4, e + 4, s - 3, n + 3), crs=pc,
-                          facecolor="none", edgecolor=line, linewidth=0.3, alpha=0.32, zorder=3)
+    put("roads", facecolor="none", edgecolor="#5a4632", linewidth=0.75 if close else 0.5,
+        alpha=0.5 if close else 0.4, zorder=2.8)
+    put("lakes", facecolor="none", edgecolor=line, linewidth=0.5, zorder=3)
+    put("coast", facecolor="none", edgecolor=line, linewidth=0.6, zorder=3)
+    put("states", facecolor="none", edgecolor=line, linewidth=0.55, zorder=3)
+    put("borders", facecolor="none", edgecolor=line, linewidth=0.9, zorder=3)
+    put("counties", facecolor="none", edgecolor=line, linewidth=0.3, alpha=0.32, zorder=3)
     for sp in ax.spines.values():
         sp.set_edgecolor("#2a2f36")
         sp.set_linewidth(0.8)
