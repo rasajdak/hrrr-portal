@@ -207,6 +207,22 @@ LAKE_TYPED = dict(levels=LAKE_LEVELS, colors=LAKE_COLORS, groups=RP_GROUPS, span
                   values=True)
 
 
+def _arrival_scale(model, fxx):
+    """
+    The bands an arrival map is cut into: wide enough that there are ten or
+    fewer of them, never narrower than the model's own frames. Soonest is red,
+    latest blue. Levels are hours after the run began; the last colour runs on
+    to the end of the window.
+    """
+    from matplotlib.colors import to_hex
+    step = MODELS[model]["step"]
+    band = next((b for b in (1, 2, 3, 6, 12, 24, 48) if b >= step and fxx <= 10 * b), 48)
+    levels = list(range(0, max(fxx, band), band))
+    cm = plt.get_cmap("Spectral")
+    colors = [to_hex(cm(i / max(len(levels) - 1.0, 1.0))) for i in range(len(levels))]
+    return dict(levels=levels, colors=colors, vmin=0, vmax=max(fxx, band))
+
+
 # field key -> everything needed to fetch + draw it
 #   group     : dropdown optgroup
 #   search    : regex identifying the GRIB message in the .idx. {f} is the
@@ -346,6 +362,12 @@ FIELDS = {
         conv=MM2IN, levels=QPF_LEVELS, colors=QPF_COLORS, vmin=0.01, vmax=8,
         mask_under=True, min_fxx=1,
         per=dict(nam=dict(search=":APCP:surface:" + BUCKET, accum=True))),
+    # when the first measurable precipitation falls, in hours after the run
+    # began (see _arrival). Its bands depend on the model and how far out the
+    # window runs, so the scale here is only the default: _field sets the real one.
+    "arrival": dict(dict(group="Precipitation", label="When rain or snow arrives", unit="h",
+        models=ALL + ("ecmwf",), product="sfc", arrival=True, search=":APCP:surface:" + BUCKET,
+        conv=None, mask_under=True, min_fxx=1), **_arrival_scale("hrrr", 18)),
     "prate": dict(group="Precipitation", label="Precipitation rate", unit="mm/hr",
         product="sfc", search=":PRATE:surface:" + INST, conv=lambda a: a * 3600.0, cmap="YlGnBu",
         vmin=0.1, vmax=25, mask_under=True),
@@ -755,6 +777,62 @@ def _radar_ptype(model, run_dt, fxx):
     return np.where(np.isfinite(dbz) & (dbz >= RP_LEVELS[0]), code, np.nan).astype("float32"), lat, lon
 
 
+ARRIVAL_IN = 0.01        # inches in one frame that count as "it has started"
+
+
+def _arrival(model, run_dt, fxx):
+    """
+    Hours after the run began at which precipitation first becomes measurable,
+    NaN where none falls by `fxx`. A frame's precipitation covers the hours
+    since the frame before, so the answer is the start of the first wet frame:
+    "from about 3 PM" rather than "by 4". Kept on disk frame by frame, as
+    _accumulate keeps its totals, so the next hour costs one download.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    f = spec("apcp", model)
+    step = MODELS[model]["step"]
+    url = lambda h: _grib_url(model, "sfc", run_dt, h)
+    find = lambda h: f["search"].format(f=h, p=h - step)
+
+    def memo(h):
+        return os.path.join(CACHE_DIR, "acc_arr%s_%s_%s_%03d.npz" % (
+            RENDER_REV, model, run_dt.strftime("%Y%m%d%H"), h))
+
+    have, first = 0, None
+    for h in range(fxx, 0, -step):
+        if os.path.exists(memo(h)):
+            try:
+                first, have = np.load(memo(h))["a"].astype("float32"), h
+                break
+            except Exception:
+                pass
+    todo = list(range(have + step, fxx + 1, step))
+    # ECMWF posts running totals, so a frame's own amount needs the one before
+    need = ([have] if f.get("diff") and have else []) + todo
+    with ThreadPoolExecutor(6) as ex:
+        raws = dict(zip(need, ex.map(lambda h: _http(url(h), rng=_locate(url(h), find(h))), need)))
+    lat = lon = prev = None
+    for h in need:
+        arrs, lat, lon = _decode(model, raws[h])
+        amount = np.nan_to_num(arrs[0])
+        if f.get("diff"):
+            amount, prev = (amount if prev is None else amount - prev), amount
+            if h not in todo:
+                continue
+        if first is None:
+            first = np.full(amount.shape, np.nan, dtype="float32")
+        wet = f["conv"](amount) >= ARRIVAL_IN
+        first = np.where(np.isnan(first) & wet, float(h - step), first).astype("float32")
+        tmp = part_name(memo(h))
+        with open(tmp, "wb") as fh:
+            np.savez_compressed(fh, a=first.astype("float16"))
+        os.replace(tmp, memo(h))
+    if lat is None:
+        _, lat, lon = _one(model, url(fxx), find(fxx))
+    _prune()
+    return first, lat, lon
+
+
 # What the lake effect score is made from, as NCEP and ECMWF index them
 LAKE_NCEP = dict(tsfc=":TMP:surface:" + INST, land=":LAND:surface:" + INST, ice=":ICEC:surface:" + INST,
                  t925=":TMP:925 mb:", t850=":TMP:850 mb:", t700=":TMP:700 mb:",
@@ -812,6 +890,8 @@ def _fetch(f, model, run_dt, fxx):
         return _radar_ptype(model, run_dt, fxx)
     if f.get("lake"):
         return _lake_effect(model, run_dt, fxx)
+    if f.get("arrival"):
+        return _arrival(model, run_dt, fxx)
     if f.get("accum"):
         return _accumulate(f, model, run_dt, fxx)
     url = _grib_url(model, f.get("product", "sfc"), run_dt, fxx)
@@ -858,6 +938,8 @@ def _field(field_key, model, run_dt, fxx):
     data, lat, lon = _fetch(f, model, run_dt, fxx)
     if f["conv"]:
         data = f["conv"](data)
+    if f.get("arrival"):
+        f.update(_arrival_scale(model, fxx))
     return f, data, lat, lon
 
 
@@ -1040,7 +1122,7 @@ def _colorbar(f, ax, tick_color, edge_color, size):
         cb.set_ticklabels(f["cats"])
     elif banded:
         cb.set_ticks(f["levels"])
-        cb.set_ticklabels(["%g" % v for v in f["levels"]])
+        cb.set_ticklabels(f.get("ticklabels") or ["%g" % v for v in f["levels"]])
     cb.ax.tick_params(labelsize=size, colors=tick_color, length=2)
     cb.outline.set_edgecolor(edge_color)
     return cb
@@ -1182,6 +1264,13 @@ def _clock(dt, tz):
     return "%s %s" % (local.strftime("%I %p %Z").lstrip("0"), local.strftime("%a %b %-d"))
 
 
+def _short_clock(dt, tz, day=False):
+    """'4 PM', or 'Tue 4 PM' when the day is wanted too."""
+    from zoneinfo import ZoneInfo
+    local = dt.astimezone(ZoneInfo(tz))
+    return local.strftime("%a %-I %p" if day else "%-I %p")
+
+
 def _when(run_dt, fxx, tz):
     """'Valid 4 PM EDT Mon Oct 12 · Hour 6 of the 10 AM EDT Mon Oct 12 run'"""
     return "Valid %s  ·  Hour %d of the %s run" % (
@@ -1244,6 +1333,20 @@ def _smooth(a, passes=1):
         out = tot / np.maximum(cnt, 1e-6)
     out[~ok] = np.nan
     return out
+
+
+def _spread(a, times):
+    """Fill missing cells from their neighbours, one ring of cells per pass."""
+    n, m = a.shape
+    for _ in range(times):
+        gap = ~np.isfinite(a)
+        if not gap.any():
+            break
+        v, c = np.pad(np.where(gap, 0.0, a), 1), np.pad((~gap).astype("float32"), 1)
+        tot = sum(v[i:i + n, j:j + m] for i in range(3) for j in range(3))
+        cnt = sum(c[i:i + n, j:j + m] for i in range(3) for j in range(3))
+        a = np.where(gap & (cnt > 0), tot / np.maximum(cnt, 1), a)
+    return a
 
 
 def _upsample(a, k):
@@ -1573,9 +1676,27 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     px_per_cell = sheet["w"] * (gx.max() - gx.min()) / (x1 - x0) / max(sv.shape[1], 1)
     sigma = max(1.5, 9.0 / max(px_per_cell, 0.1))
     passes = int(min(14, round(1.5 * sigma * sigma)))
+    arrival = f.get("arrival")
+    if arrival:
+        # the scale's ticks are clock times, with the day once it runs past one
+        days = fxx > 24
+        f = dict(f, ticklabels=[_short_clock(run_dt + timedelta(hours=h), reg["tz"], days)
+                                for h in f["levels"]])
     bands = _bands(f)
     typed = f.get("typed")
-    if typed:
+    if arrival:
+        # Where it arrives at all and when are smoothed apart: the edge of the
+        # wet area from a yes/no layer, the hour from the times alone, spread
+        # outward first so the edge is not eaten back by the missing cells.
+        levels, colors, extend = bands
+        k = int(min(12, max(1, round(900.0 / max(sv.shape)))))
+        wet = _upsample(_smooth(np.isfinite(sv).astype("float32"), passes), k)
+        if np.isfinite(sv).any():
+            hour = _upsample(_smooth(_spread(sv, passes + 3), passes), k)
+            hour = np.where(wet >= 0.5, hour, np.nan)
+            ax.contourf(_upsample(sx, k), _upsample(sy, k), np.ma.masked_invalid(hour),
+                        levels=levels, colors=colors, extend=extend, antialiased=False, zorder=2)
+    elif typed:
         # Two things to smooth, and they cannot be smoothed as one number: the
         # echo, and which type owns each spot. The type is settled by smoothing
         # a yes/no layer per group and taking the strongest, so a rain/snow
@@ -1641,7 +1762,9 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
         shown = math.isfinite(v) and not blank and not f.get("cats") and (not typed or typed.get("values"))
         if shown:
-            ax.text(cx, cy + (y1 - y0) * 0.012 * off, _fmt_value(v, f), ha="center", va="bottom",
+            said = (_short_clock(run_dt + timedelta(hours=v), reg["tz"], days) if arrival
+                    else _fmt_value(v, f))
+            ax.text(cx, cy + (y1 - y0) * 0.012 * off, said, ha="center", va="bottom",
                     fontsize=14.5 * ts, fontweight="bold", color="#111", path_effects=halo, zorder=6)
         ax.text(cx, cy - (y1 - y0) * 0.012 * off, name, ha="center", va="top",
                 fontsize=(11 if major else 9) * ts, fontweight="semibold" if major else "medium",
@@ -1656,12 +1779,14 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     # ---- title block ----
     m = MODELS[model]
     plain = f.get("cats") or (typed and not typed.get("values"))   # no unit, no single number
-    unit = "" if plain else " (%s)" % f["unit"]
+    unit = "" if plain or arrival else " (%s)" % f["unit"]
     seen = vals[inview[sl]] if inview[sl].shape == vals.shape else vals
     seen = seen[np.isfinite(seen)]
     if typed:
         seen = seen % 100
-    peak = "Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"]) if seen.size and not plain else ""
+    peak = ("Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"])
+            if seen.size and not plain and not arrival else "")
+    until = run_dt + timedelta(hours=fxx)
     if dark:
         # Two bands of equal height, text from the left, the same space above
         # the text as below it: the arrangement settled on for the loop's reel.
@@ -1671,13 +1796,14 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
                  fontweight="semibold", color="#b9c8da", va="center", ha="left")
         fig.text(L, top + 0.084, "%s%s" % (f["label"], unit), fontfamily=TITLE_FONT, fontsize=40,
                  fontweight="semibold", color="white", va="center", ha="left")
-        fig.text(L, top + 0.036, _clock(valid, reg["tz"]), fontfamily=TITLE_FONT, fontsize=50,
+        fig.text(L, top + 0.036, "Through " + _short_clock(until, reg["tz"], True) if arrival
+                 else _clock(valid, reg["tz"]), fontfamily=TITLE_FONT, fontsize=50,
                  fontweight="semibold", color="#4ea3ff", va="center", ha="left")
         fig.text(1 - L, top + 0.119, "hour %d of the %s run" % (fxx, _clock(run_dt, reg["tz"])),
                  fontsize=14.5, fontweight="medium", color="#8ea3bd", va="center", ha="right")
         cax = fig.add_axes([L, 0.088, 1 - 2 * L, 0.014])
         _colorbar(f, cax, "#dfe8f3", "#33465e", 15)
-        fig.text(L, 0.121, peak or ("" if plain else f["unit"]), fontsize=16, fontweight="medium",
+        fig.text(L, 0.121, peak or ("" if plain or arrival else f["unit"]), fontsize=16, fontweight="medium",
                  color="#b9c8da", va="center", ha="left")
         fig.text(L, 0.034, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=36,
                  fontweight="semibold", color="white", va="center", ha="left")
@@ -1688,7 +1814,9 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         fig.text(0.011, 0.985 if shape == "wide" else 0.993, "%s  ·  %s%s" % (m["name"], f["label"], unit),
                  fontfamily=TITLE_FONT, fontsize=26 * k, fontweight="semibold", color="#111", va="top", ha="left")
         sub = 0.940 if shape == "wide" else 0.952
-        fig.text(0.011, sub, _when(run_dt, fxx, reg["tz"]),
+        fig.text(0.011, sub, "First measurable rain or snow, through %s  ·  from the %s run" % (
+                     _clock(until, reg["tz"]), _clock(run_dt, reg["tz"])) if arrival
+                 else _when(run_dt, fxx, reg["tz"]),
                  fontsize=13 * k, fontweight="medium", color="#3a4048", va="top", ha="left")
         fig.text(0.989, 0.983, "ryansajdak.com", fontfamily=TITLE_FONT, fontsize=19,
                  fontweight="semibold", color="#111", va="top", ha="right")
@@ -1700,7 +1828,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         cy = 0.036 if shape == "wide" else 0.034
         cax = fig.add_axes([0.2, cy, 0.6, 0.018 if shape == "wide" else 0.012])
         _colorbar(f, cax, "#222", "#444", 11.5 * (1.0 if shape == "wide" else 1.2))
-        if not plain and not typed:
+        if not plain and not typed and not arrival:
             fig.text(0.192, cy + 0.009 if shape == "wide" else cy + 0.006, f["unit"], fontsize=12,
                      fontweight="medium", color="#222", va="center", ha="right")
         fig.text(0.989, 0.014 if shape == "wide" else 0.008, "Data: %s" % credit(model), fontsize=9.5,
