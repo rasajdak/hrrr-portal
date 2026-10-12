@@ -19,14 +19,16 @@ import time
 
 import hrrr_render as hr
 
-# model -> (fields, regions). Frames are all of the model's. Kept lean on
-# purpose: this set is about 3,900 maps a day. HRRR is the expensive line,
-# because it comes round every hour.
+# model -> (fields, regions). Frames are all of the model's. This set is about
+# 8,100 maps a day, a little over 5 hours of the one core at 2.3 s a map. HRRR
+# is the expensive line, because it comes round every hour: one more HRRR field
+# across these four regions is 1,824 maps a day.
+AREAS = ["wny", "newyork", "northeast", "conus"]
 PLAN = [
-    ("hrrr",  ["refc", "apcp_tot", "asnow"],   ["northeast", "wny"]),
-    ("nam",   ["apcp_tot", "snow10"],          ["northeast", "wny"]),
-    ("gfs",   ["apcp_tot", "snow10"],          ["northeast", "conus"]),
-    ("ecmwf", ["apcp_tot", "snow10"],          ["northeast", "conus"]),
+    ("hrrr",  ["refc", "apcp_tot", "asnow"],   AREAS),
+    ("nam",   ["apcp_tot", "snow10"],          AREAS),
+    ("gfs",   ["apcp_tot", "snow10"],          AREAS),
+    ("ecmwf", ["apcp_tot", "snow10"],          AREAS),
 ]
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
