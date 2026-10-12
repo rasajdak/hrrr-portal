@@ -213,7 +213,7 @@ def share():
         "img{max-width:100%%;height:auto;display:block;margin:0 auto}"
         "p{font-size:14px;margin:14px}a{color:#4ea3ff}</style>"
         "<img src='%(i)s' alt='%(t)s'>"
-        "<p>%(d)s</p><p><a href='/'>Open the live map</a></p></html>"
+        "<p>%(d)s</p><p><a href='https://ryansajdak.com/'>ryansajdak.com</a></p></html>"
         % dict(t=title, d=desc, i=escape(img), w=hr.MAP_W, h=hr.MAP_H),
         mimetype="text/html")
 

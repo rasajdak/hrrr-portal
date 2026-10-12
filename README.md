@@ -55,7 +55,7 @@ next deploy:
 - **Smoke (HRRR-Smoke)** — near-surface smoke · vertically-integrated smoke
 - **Upper air (pressure levels)** — 500 mb height · 850/500 mb temp · 700 mb RH · 700 mb vertical velocity · 250 mb (jet) & 850 mb wind speed
 
-Not every model carries every field: NAM has 43, RAP 41, GFS 33. A field's
+Not every model carries every field: NAM has 45, RAP 41, GFS 35. A field's
 `models` says who has it and `per` holds the per-model differences (NAM and GFS
 call sea-level pressure `PRMSL`, and so on). Add more by extending `FIELDS` in
 `hrrr_render.py`.
@@ -70,9 +70,9 @@ Two things the files do not hand over directly:
   and pruned after 36 hours.
 
 ## Static maps
-`/api/map` draws a finished 1600 x 1000 picture in a Lambert conformal fitted to
-one of 13 regions (`REGIONS`): land and water, state and national borders, a
-title with init and valid times, the value at each city that fits, the maximum
+`/api/map` draws a finished 2400 x 1500 picture in a Lambert conformal fitted to
+one of 13 regions (`REGIONS`): land and water, state, county and national borders, a
+title with the valid time in the region's own time zone, the value at each city that fits, the maximum
 in view and a colorbar. The **Static map** button on the page opens it with a
 region picker, a download button and a share link. `/share` wraps the same image
 in a page with Open Graph tags, pinned to the run, so a posted link shows the

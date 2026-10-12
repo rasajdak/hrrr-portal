@@ -52,7 +52,7 @@ IMG_WIDTH = 2400  # px; height derived from the mercator aspect of EXTENT
 
 # Part of every cache key. Bump it when a colormap or the drawing changes, or a
 # PNG rendered the old way is served forever.
-RENDER_REV = "m3"
+RENDER_REV = "m5"
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -854,7 +854,9 @@ CITIES = [
     ("Cheyenne", 41.14, -104.82), ("Reno", 39.53, -119.81), ("Flagstaff", 35.20, -111.65),
 ]
 
-MAP_W, MAP_H, MAP_DPI = 1600, 1000, 100
+# Laid out as a 16 x 10 inch sheet and saved at 150 dpi: 2400 x 1500 pixels,
+# enough that the type and county lines stay sharp when a phone zooms in.
+MAP_W, MAP_H, MAP_DPI = 2400, 1500, 150
 _MAP_AX = [0.0, 0.072, 1.0, 0.838]          # the map itself, as a figure fraction
 
 
@@ -870,15 +872,70 @@ def _fmt_value(v, f):
     return ("%.2f" % v) if abs(v) < 1 and f["unit"] == "in" else "%.1f" % v
 
 
-def _when(run_dt, fxx, tz):
-    """'Init 12Z Mon Oct 12 2026 · Hour 18 · Valid 06Z Tue Oct 13 (2 AM EDT)'"""
+def _clock(dt, tz):
+    """'4 PM EDT Mon Oct 12' in the region's own zone."""
     from zoneinfo import ZoneInfo
-    valid = run_dt + timedelta(hours=fxx)
-    local = valid.astimezone(ZoneInfo(tz))
-    hour = local.strftime("%I %p").lstrip("0")
-    return "Init %s  ·  Hour %d  ·  Valid %s (%s %s %s)" % (
-        run_dt.strftime("%HZ %a %b %-d %Y"), fxx, valid.strftime("%HZ %a %b %-d"),
-        local.strftime("%a"), hour, local.strftime("%Z"))
+    local = dt.astimezone(ZoneInfo(tz))
+    return "%s %s" % (local.strftime("%I %p %Z").lstrip("0"), local.strftime("%a %b %-d"))
+
+
+def _when(run_dt, fxx, tz):
+    """'Valid 4 PM EDT Mon Oct 12 · Hour 6 of the 10 AM EDT Mon Oct 12 run'"""
+    return "Valid %s  ·  Hour %d of the %s run" % (
+        _clock(run_dt + timedelta(hours=fxx), tz), fxx, _clock(run_dt, tz))
+
+
+COUNTY_ZIP = "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_county_5m.zip"
+_counties = []          # [(minx, miny, maxx, maxy, geometry)], loaded once
+
+
+def _county_shapes(w, e, s, n):
+    """
+    County outlines touching a lat/lon box, from the Census cartographic
+    boundary file (fetched once into cache/geo). Counties are what make a
+    regional map readable to the people who live in it. No file, no counties:
+    the map still draws.
+    """
+    if not _counties:
+        try:
+            import zipfile
+            from cartopy.io import shapereader
+            geo = os.path.join(CACHE_DIR, "geo")
+            shp = os.path.join(geo, "cb_2023_us_county_5m.shp")
+            if not os.path.exists(shp):
+                os.makedirs(geo, exist_ok=True)
+                zipfile.ZipFile(io.BytesIO(_http(COUNTY_ZIP, timeout=60))).extractall(geo)
+            for g in shapereader.Reader(shp).geometries():
+                _counties.append(g.bounds + (g,))
+        except Exception:
+            return []
+    return [g for x0, y0, x1, y1, g in _counties
+            if x1 > w and x0 < e and y1 > s and y0 < n]
+
+
+def _bands(f):
+    """(levels, colors, extend) if the field is drawn in bands, else None."""
+    if f.get("cats"):
+        return None
+    if f.get("cmap") == "_nws":
+        cmap, norm = _nws_reflectivity()
+        return list(norm.boundaries), list(cmap.colors), "neither"
+    if f.get("levels"):
+        return f["levels"], f["colors"], "max"
+    return None
+
+
+def _smooth(a):
+    """3x3 mean that ignores missing cells and leaves the array's shape alone."""
+    ok = np.isfinite(a)
+    v = np.pad(np.where(ok, a, 0.0), 1, mode="edge")
+    c = np.pad(ok.astype("float32"), 1, mode="edge")
+    n, m = a.shape
+    tot = sum(v[i:i + n, j:j + m] for i in range(3) for j in range(3))
+    cnt = sum(c[i:i + n, j:j + m] for i in range(3) for j in range(3))
+    out = tot / np.maximum(cnt, 1)
+    out[~ok] = np.nan
+    return out
 
 
 def render_map(field_key, run_dt, fxx, region="conus", model="hrrr"):
@@ -945,9 +1002,19 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
                    facecolor="#f3f1ec", edgecolor="none", zorder=1)
     ax.add_feature(cfeature.NaturalEarthFeature("physical", "lakes", res),
                    facecolor="#dbe6ee", edgecolor="none", zorder=1)
-    ax.pcolormesh(gx[::stride, ::stride], gy[::stride, ::stride],
-                  np.ma.masked_invalid(vals[::stride, ::stride]),
-                  cmap=cmap, norm=norm, shading=_shading(f), zorder=2, rasterized=True)
+    sx, sy, sv = gx[::stride, ::stride], gy[::stride, ::stride], vals[::stride, ::stride]
+    bands = _bands(f)
+    if bands:
+        # A banded scale wants real contours. Shading a mesh leaves every band
+        # edge stepped along the grid cells, which shows once a map is zoomed to
+        # a few counties. A light 3x3 mean takes the last of the stair-steps
+        # off the drawing; the printed values and the maximum stay raw.
+        levels, colors, extend = bands
+        ax.contourf(sx, sy, np.ma.masked_invalid(_smooth(sv)), levels=levels, colors=colors,
+                    extend=extend, antialiased=False, zorder=2)
+    else:
+        ax.pcolormesh(sx, sy, np.ma.masked_invalid(sv),
+                      cmap=cmap, norm=norm, shading=_shading(f), zorder=2, rasterized=True)
     line = "#2a2f36"
     ax.add_feature(cfeature.NaturalEarthFeature("physical", "lakes", res),
                    facecolor="none", edgecolor=line, linewidth=0.5, zorder=3)
@@ -958,6 +1025,9 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         facecolor="none", edgecolor=line, linewidth=0.55, zorder=3)
     ax.add_feature(cfeature.NaturalEarthFeature("cultural", "admin_0_boundary_lines_land", res),
                    facecolor="none", edgecolor=line, linewidth=0.9, zorder=3)
+    if (e - w) < 22:
+        ax.add_geometries(_county_shapes(w - 4, e + 4, s - 3, n + 3), crs=pc,
+                          facecolor="none", edgecolor=line, linewidth=0.3, alpha=0.4, zorder=3)
     for sp in ax.spines.values():
         sp.set_edgecolor("#2a2f36")
         sp.set_linewidth(0.8)
@@ -993,7 +1063,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
              fontsize=20, fontweight="bold", color="#111", va="top", ha="left")
     fig.text(0.011, 0.932, _when(run_dt, fxx, reg["tz"]),
              fontsize=12.5, color="#3a4048", va="top", ha="left")
-    fig.text(0.989, 0.972, "weather.ryansajdak.com", fontsize=13, fontweight="bold",
+    fig.text(0.989, 0.972, "ryansajdak.com", fontsize=13, fontweight="bold",
              color="#111", va="top", ha="right")
     seen = vals[inview[sl]] if inview[sl].shape == vals.shape else vals
     seen = seen[np.isfinite(seen)]
