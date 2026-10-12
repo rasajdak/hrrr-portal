@@ -60,8 +60,8 @@
   "use strict";
   var $=function(id){ return document.getElementById(id); };
   // Landscape: a title strip over the map. Vertical: the map fills the whole
-  // reel, with one block high up (a large day and time, then the legend), kept
-  // under the top of the screen the app covers. The lower third is left alone:
+  // reel, with one block at the very top (a large day and time, then the
+  // legend). The lower third is left alone:
   // the caption sits there, so nothing that matters is put in it.
   var W=1920, H=1080, HEAD=75, MW=1920, MH=1005, TALL=false;
   try{ TALL=localStorage.getItem("loopshape")==="tall"; }catch(e){}
@@ -210,11 +210,13 @@
 
     var c=clock(min), total=META.minutes.length-1, at=total?Math.min(head,total)/total:0;
     if(TALL){
-      // One block, high on the reel but under the part the app covers: a large
-      // day and time (the thing a viewer has to read at a glance), then a thin
-      // row for the legend. Nothing else is laid over the map.
-      var ty=268, th=168, lh=64;
-      ctx.fillStyle="rgba(15,23,35,.92)"; ctx.fillRect(0,ty,W,th+lh);
+      // One block at the very top: a large day and time (the thing a viewer has
+      // to read at a glance), then a thin row for the legend. The band runs from
+      // the top edge so no strip of map is stranded above it; the type starts
+      // lower, clear of the phone's own status bar and the app's small icons.
+      // Nothing else is laid over the map.
+      var ty=120, th=168, lh=64;
+      ctx.fillStyle="rgba(15,23,35,.94)"; ctx.fillRect(0,0,W,ty+th+lh);
       ctx.textBaseline="middle"; ctx.textAlign="left";
       var big='600 132px "Barlow Condensed", Barlow, sans-serif';
       ctx.font=big; var wDay=ctx.measureText(c.day).width;
