@@ -68,7 +68,7 @@ IMG_WIDTH = 2400  # px; height derived from the mercator aspect of EXTENT
 
 # Part of every cache key. Bump it when a colormap or the drawing changes, or a
 # PNG rendered the old way is served forever.
-RENDER_REV = "m9"
+RENDER_REV = "m10"
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -1187,9 +1187,9 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
         shown = math.isfinite(v) and not blank and not f.get("cats")
         if shown:
-            ax.text(cx, cy + (y1 - y0) * 0.008, _fmt_value(v, f), ha="center", va="bottom",
+            ax.text(cx, cy + (y1 - y0) * 0.012, _fmt_value(v, f), ha="center", va="bottom",
                     fontsize=14.5, fontweight="bold", color="#111", path_effects=halo, zorder=6)
-        ax.text(cx, cy - (y1 - y0) * 0.009, name, ha="center", va="top",
+        ax.text(cx, cy - (y1 - y0) * 0.012, name, ha="center", va="top",
                 fontsize=9.5, fontweight="medium", color="#222", path_effects=halo, zorder=6)
 
     # ---- title block ----
