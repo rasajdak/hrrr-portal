@@ -48,7 +48,7 @@
     <input type="range" id="scrub" min="0" max="1000" value="0" step="1" />
     <span id="note">loading…</span>
   </div>
-  <div id="help">Simulated radar from the model, coloured by what is falling: green rain, pink wintry mix, blue snow. The picture blends between forecast times, so the weather moves between them. Space plays and pauses.</div>
+  <div id="help">Simulated radar from the model, coloured by what is falling: green rain, pink wintry mix, blue snow. Between forecast times the weather is carried along its own motion, so bands travel. Space plays and pauses.</div>
 </div>
 
 <script>
@@ -64,7 +64,7 @@
   var glc=document.createElement("canvas"); glc.width=MW; glc.height=MH;
   var gl=glc.getContext("webgl2",{premultipliedAlpha:true,alpha:true,antialias:false});
 
-  var META=null, baseImg=null, topImg=null, tex=[], loaded=0, token=0;
+  var META=null, baseImg=null, topImg=null, tex=[], flow=[], loaded=0, token=0;
   var head=0, playing=true, last=0, hold=0, recorder=null;
   var MODEL="hrrr", REGION="wny";
   try{ MODEL=localStorage.getItem("loopmodel")||MODEL; REGION=localStorage.getItem("region")||REGION; }catch(e){}
@@ -72,20 +72,24 @@
   try{ REGION=localStorage.getItem("loopregion")||REGION; }catch(e){}
 
   // ---- shader: two forecast times in, one blended, coloured picture out ----
-  var prog=null, palTex=null, U={};
+  var prog=null, palTex=null, stillTex=null, U={};
   function shader(type,src){ var s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
     if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
   function initGL(){
     var vs="#version 300 es\nin vec2 p; out vec2 uv; void main(){ uv=vec2(p.x*.5+.5, .5-p.y*.5); gl_Position=vec4(p,0.,1.); }";
     var fs=[
       "#version 300 es","precision highp float;",
-      "uniform sampler2D A, B, PAL; uniform float t; in vec2 uv; out vec4 o;",
+      "uniform sampler2D A, B, PAL, F; uniform float t; uniform vec2 fs; in vec2 uv; out vec4 o;",
       // one colour family: six stops across 5..55 dBZ, flat steps with soft joins
       "vec3 ramp(int g, float d){",
       "  float x=clamp((d-5.)/10., 0., 4.999); int i=int(floor(x)); float f=smoothstep(.30,.70,fract(x));",
       "  return mix(texelFetch(PAL, ivec2(g*6+i,0), 0).rgb, texelFetch(PAL, ivec2(g*6+i+1,0), 0).rgb, f); }",
       "void main(){",
-      "  vec3 v=mix(texture(A,uv).rgb, texture(B,uv).rgb, t)*75.;",   // rain, mix, snow, in dBZ
+      // F is how far the weather travels from A to B. Slide A forward along it
+      // and B back, then blend: a band moves, where a plain fade would dim it
+      // in one place and brighten it in the next.
+      "  vec2 d=(texture(F,uv).rg*255.-128.)/127.*fs;",
+      "  vec3 v=mix(texture(A,uv-t*d).rgb, texture(B,uv+(1.-t)*d).rgb, t)*75.;",   // rain, mix, snow, in dBZ
       "  float m=max(v.r, max(v.g, v.b));",
       "  if(m<3.){ o=vec4(0.); return; }",
       // whichever type is strongest owns the pixel; near a tie the colours blend
@@ -98,9 +102,13 @@
     var buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
     var loc=gl.getAttribLocation(prog,"p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-    ["A","B","PAL","t"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
-    gl.uniform1i(U.A,0); gl.uniform1i(U.B,1); gl.uniform1i(U.PAL,2);
+    ["A","B","PAL","F","t","fs"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
+    gl.uniform1i(U.A,0); gl.uniform1i(U.B,1); gl.uniform1i(U.PAL,2); gl.uniform1i(U.F,3);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+    // "no motion", used until a pair's flow arrives (and for good if it never does)
+    stillTex=gl.createTexture(); gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,stillTex);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,1,1,0,gl.RGB,gl.UNSIGNED_BYTE,new Uint8Array([128,128,0]));
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
   }
   function setPalette(hex){
     var px=new Uint8Array(hex.length*4);
@@ -123,12 +131,12 @@
   function load(){
     var my=++token;
     stopRecording(true);
-    tex.forEach(function(t){ if(t) gl.deleteTexture(t); }); tex=[]; loaded=0; head=0; META=null; baseImg=topImg=null;
+    tex.concat(flow).forEach(function(t){ if(t) gl.deleteTexture(t); }); tex=[]; flow=[]; loaded=0; head=0; META=null; baseImg=topImg=null;
     $("rec").disabled=true; $("note").textContent="loading…"; draw();
     fetch("/api/loop?model="+MODEL+"&region="+REGION).then(function(r){ return r.json(); }).then(function(m){
       if(my!==token) return;
       if(m.error) throw new Error(m.error);
-      META=m; tex=new Array(m.minutes.length).fill(null);
+      META=m; tex=new Array(m.minutes.length).fill(null); flow=new Array(m.minutes.length).fill(null);
       if(!$("model").options.length){
         m.models.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("model").appendChild(o); });
         m.regions.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("region").appendChild(o); });
@@ -146,7 +154,11 @@
           if(my!==token) return;
           tex[k]=makeTex(img); loaded++;
           if(loaded===m.minutes.length) $("rec").disabled=false;
-        }).catch(function(){}).then(one);
+        }).catch(function(){}).then(function(){
+          // the motion from the frame before to this one: both now exist on the server
+          if(k>0&&my===token) image("/api/loop/flow?model="+MODEL+"&run="+m.run+"&region="+REGION+"&m="+m.minutes[k-1])
+            .then(function(img){ if(my===token) flow[k-1]=makeTex(img); }).catch(function(){});
+        }).then(one);
       }
       for(var i=0;i<4;i++) one();
     }).catch(function(e){ if(my===token) $("note").textContent=String(e.message||e); });
@@ -171,6 +183,8 @@
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex[a]);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,tex[b]);
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,palTex);
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,(b>a&&flow[a])||stillTex);
+      gl.uniform2f(U.fs, META.flow_scale/META.frame_w, META.flow_scale/META.frame_h);
       gl.uniform1f(U.t,pos-a);
       gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
       ctx.drawImage(glc,0,HEAD);

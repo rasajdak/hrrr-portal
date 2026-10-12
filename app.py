@@ -200,6 +200,26 @@ def loop_frame():
     return send_file(path, mimetype="image/png", max_age=86400)
 
 
+@app.route("/api/loop/flow")
+def loop_flow():
+    """How the weather moves from the frame at m minutes to the next one."""
+    try:
+        model = _model()
+        if model not in loop.LOOPS:
+            raise ValueError("no loop for %r" % model)
+        region = request.args.get("region", "wny")
+        if region not in hr.REGIONS:
+            raise ValueError("unknown region %r" % region)
+        run = _parse_run(request.args.get("run"), model) if request.args.get("run") else loop.latest_run(model)
+        path = loop.flow_png(model, run, int(request.args.get("m", "0")), region)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        app.logger.error("loop flow failed: %s\n%s", e, traceback.format_exc())
+        return jsonify(error="flow failed: %s" % e), 502
+    return send_file(path, mimetype="image/png", max_age=86400)
+
+
 @app.route("/api/loop/base")
 def loop_base():
     try:

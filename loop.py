@@ -13,8 +13,17 @@ frame the static maps use, so everything registers):
          red = rain, green = wintry mix, blue = snow, each the echo strength
          (0..75 dBZ on 0..255) where that type owns the spot      (one per time)
 
+  flow   how the weather moves between one time and the next, as a
+         small field of displacements                            (one per pair)
+
 Frames are small (about 960 x 500), smoothed here, and coloured by the shader,
 so the palette and the blend can change without redrawing anything.
+
+The flow is what makes it a loop rather than a slideshow. Fading from one time
+to the next makes every band dim where it was and brighten where it will be,
+which reads as twinkling. With the flow, the shader slides the earlier picture
+forward and the later one back along the motion and blends those, so a band
+travels.
 """
 
 import io
@@ -145,7 +154,7 @@ def _sample(a, i, j):
     return np.where(ok, out, 0.0)
 
 
-def frames(model, run_dt, m, regions):
+def frames(model, run_dt, m, regions, flows=True):
     """
     Draw the data frame at m minutes for each region, skipping any on disk.
     One call per time covers every region, because the six downloads behind a
@@ -153,7 +162,7 @@ def frames(model, run_dt, m, regions):
     """
     todo = [r for r in regions if not os.path.exists(frame_path(model, run_dt, m, r))]
     if not todo:
-        return
+        return _pair_up(model, run_dt, m, regions) if flows else None
     from PIL import Image
     dbz, kind, t2m, lat, lon = _fields(model, run_dt, m)
     dbz = np.where(np.isfinite(dbz), np.clip(dbz, 0, 75), 0.0)
@@ -173,6 +182,117 @@ def frames(model, run_dt, m, regions):
         tmp = "%s.%d.part" % (path, os.getpid())
         img.save(tmp, format="PNG", optimize=True)
         os.replace(tmp, path)
+    if flows:
+        _pair_up(model, run_dt, m, regions)
+
+
+def _pair_up(model, run_dt, m, regions):
+    """Work out the flow to and from a frame's neighbours wherever both ends exist."""
+    step = LOOPS[model]["step"]
+    for region in regions:
+        for a in (m - step, m):
+            if a >= 0 and a + step <= LOOPS[model]["to"] \
+                    and os.path.exists(frame_path(model, run_dt, a, region)) \
+                    and os.path.exists(frame_path(model, run_dt, a + step, region)) \
+                    and not os.path.exists(flow_path(model, run_dt, a, region)):
+                try:
+                    flow_png(model, run_dt, a, region)
+                except Exception:
+                    pass
+
+
+# ------------------------------------------------------------------- flow ---
+FLOW_REV = "F1"
+_DS, _WIN, _STRIDE = 4, 5, 4        # work at 1/4 size; 11 x 11 windows every 4th cell
+
+
+def flow_scale(model, region):
+    """
+    The largest displacement, in frame pixels, the flow of this model and
+    region can express: weather moving 40 m/s for one step, capped where the
+    search would stop being a search. It is also the scale the PNG is coded in.
+    """
+    _, x0, x1, _, _ = hr.frame(region)
+    px = (x1 - x0) / FRAME_W                                  # metres per frame pixel
+    return float(min(96.0, max(8.0, 40.0 * LOOPS[model]["step"] * 60.0 / px)))
+
+
+def _boxsum(a, r):
+    """Sum over the (2r+1) square window round every cell, edges padded."""
+    p = np.pad(a, ((r + 1, r), (r + 1, r)), mode="edge").cumsum(0).cumsum(1)
+    k = 2 * r + 1
+    return p[k:, k:] - p[:-k, k:] - p[k:, :-k] + p[:-k, :-k]
+
+
+def _flow(a, b, maxd):
+    """
+    Displacement field carrying picture `a` onto picture `b`, by block matching:
+    for each window, the shift of `b` that best matches `a`, with a small price
+    on distance so featureless ground does not wander. Windows holding no
+    weather take their motion from neighbours that do. Returns (rows, cols, 2)
+    as (dx, dy) in full-frame pixels.
+    """
+    h, w = (a.shape[0] // _DS) * _DS, (a.shape[1] // _DS) * _DS
+    A = a[:h, :w].reshape(h // _DS, _DS, w // _DS, _DS).mean((1, 3))
+    B = b[:h, :w].reshape(h // _DS, _DS, w // _DS, _DS).mean((1, 3))
+    R = int(math.ceil(maxd / _DS))
+    Bp = np.pad(B, R, mode="constant")
+    gy, gx = np.arange(_STRIDE // 2, A.shape[0], _STRIDE), np.arange(_STRIDE // 2, A.shape[1], _STRIDE)
+    best = np.full((gy.size, gx.size), np.inf, dtype="float32")
+    dxy = np.zeros((gy.size, gx.size, 2), dtype="float32")
+    area = float((2 * _WIN + 1) ** 2)
+    for sy in range(-R, R + 1):
+        for sx in range(-R, R + 1):
+            shifted = Bp[R + sy:R + sy + A.shape[0], R + sx:R + sx + A.shape[1]]
+            cost = _boxsum(np.abs(A - shifted), _WIN)[np.ix_(gy, gx)] / area + 0.0015 * math.hypot(sx, sy)
+            if sx == 0 and sy == 0:
+                still = cost
+            better = cost < best
+            best = np.where(better, cost, best)
+            dxy[better] = (sx, sy)
+    # a shift has to earn its place: where moving the window barely beats
+    # leaving it alone, the weather there is changing, not travelling
+    dxy[best > 0.8 * still] = 0.0
+    # Trust a window by how much weather is in it, then let motion spread into
+    # the empty ones. Double precision: the running sums behind _boxsum leave
+    # float32 residue where the true sum is zero, and dividing by that residue
+    # once produced displacements of millions of pixels.
+    weight = (_boxsum(A + B, _WIN)[np.ix_(gy, gx)] / area > 0.02).astype("float64")
+    dxy = dxy.astype("float64")
+    for _ in range(6):
+        wsum = _boxsum(weight, 1)
+        known = wsum > 1e-3
+        dxy = np.stack([np.where(known, _boxsum(dxy[..., k] * weight, 1) / np.where(known, wsum, 1.0), 0.0)
+                        for k in (0, 1)], axis=-1)
+        weight = np.where(known, np.minimum(1.0, wsum / 9.0 + weight * 0.5), 0.0)
+    return np.clip(dxy * _DS, -maxd, maxd).astype("float32")
+
+
+def flow_path(model, run_dt, m, region):
+    return os.path.join(hr.CACHE_DIR, "loop_%s_flow_%s_%s_%04d_%s.png" % (
+        FLOW_REV, model, run_dt.strftime("%Y%m%d%H"), m, region))
+
+
+def flow_png(model, run_dt, m, region):
+    """The flow from the frame at m minutes to the next one. Makes both if need be."""
+    step = LOOPS[model]["step"]
+    if m not in minutes(model) or m + step not in minutes(model):
+        raise ValueError("no pair of frames starts at %d minutes" % m)
+    path = flow_path(model, run_dt, m, region)
+    if os.path.exists(path):
+        return path
+    from PIL import Image
+    frames(model, run_dt, m, [region], flows=False)
+    frames(model, run_dt, m + step, [region], flows=False)
+    load = lambda mm: np.asarray(Image.open(frame_path(model, run_dt, mm, region)), dtype="float32").max(-1) / 255.0
+    maxd = flow_scale(model, region)
+    d = np.clip(_flow(load(m), load(m + step), maxd) / maxd, -1, 1)
+    rgb = np.zeros(d.shape[:2] + (3,), dtype="uint8")
+    rgb[..., :2] = np.round(128 + d * 127).astype("uint8")
+    tmp = "%s.%d.part" % (path, os.getpid())
+    Image.fromarray(rgb, "RGB").save(tmp, format="PNG")
+    os.replace(tmp, path)
+    return path
 
 
 def frame_path(model, run_dt, m, region):
@@ -278,7 +398,8 @@ def meta(model, region):
         run=stamp, run_iso=run.strftime("%Y-%m-%dT%H:00:00Z"),
         step=LOOPS[model]["step"], minutes=mins,
         ready=[m for m in mins if os.path.basename(frame_path(model, run, m, region)) in have],
-        width=BASE_W, height=BASE_H,
+        width=BASE_W, height=BASE_H, frame_w=FRAME_W, frame_h=FRAME_H,
+        flow_scale=flow_scale(model, region),
         models=[dict(key=k, label=v["label"]) for k, v in LOOPS.items()],
         regions=hr.region_catalog(),
         colors=hr.RP_COLORS, levels=hr.RP_LEVELS, groups=hr.RP_GROUPS,
