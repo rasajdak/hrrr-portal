@@ -3,8 +3,10 @@ HRRR Interpretation Portal — Flask backend.
 
 Endpoints
   GET /                        -> static/index.html
-  GET /api/config             -> fields, extent bounds, latest run guess
-  GET /api/overlay            -> rendered field PNG (query: field, run, fxx)
+  GET /api/config?model=      -> models, that model's fields and newest run, regions
+  GET /api/overlay            -> rendered field PNG (query: model, field, run, fxx)
+  GET /api/map                -> finished static map PNG (adds: region)
+  GET /share                  -> a page around one static map, for posting a link
   GET /api/legend?field=...   -> colorbar PNG for a field
   GET /api/panel?lat=&lon=    -> every field a desk panel shows, in one object
   POST /api/purpleair?key=    -> relay a PurpleAir Data Processor push to Pelion
@@ -16,6 +18,7 @@ import os
 import traceback
 import urllib.error
 import urllib.request
+from html import escape
 from datetime import datetime, timezone
 
 from flask import Flask, request, send_file, jsonify, Response, send_from_directory
@@ -30,10 +33,17 @@ WAQI_TOKEN = os.environ.get("WAQI_TOKEN", "")
 app = Flask(__name__, static_folder="static", static_url_path="")
 
 
-def _parse_run(s):
+def _model():
+    m = request.args.get("model", "hrrr")
+    if m not in hr.MODELS:
+        raise ValueError("unknown model %r" % m)
+    return m
+
+
+def _parse_run(s, model="hrrr"):
     """'2026080112' (YYYYMMDDHH) -> aware UTC datetime; default = newest on AWS."""
     if not s:
-        return hr.latest_available_run()
+        return hr.latest_available_run(model)
     try:
         dt = datetime.strptime(s, "%Y%m%d%H")
         return dt.replace(tzinfo=timezone.utc)
@@ -48,15 +58,24 @@ def index():
 
 @app.route("/api/config")
 def config():
-    run = hr.latest_available_run()
+    try:
+        model = _model()
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    run = hr.latest_available_run(model)
+    m = hr.MODELS[model]
     return jsonify(
-        fields=hr.field_catalog(),
+        model=model,
+        models=hr.model_catalog(),
+        regions=hr.region_catalog(),
+        fields=hr.field_catalog(model),
         bounds=hr.extent_bounds(),
         latest_run=run.strftime("%Y%m%d%H"),
         latest_run_label=run.strftime("%Y-%m-%d %HZ"),
         run_iso=run.strftime("%Y-%m-%dT%H:00:00Z"),
-        max_fxx=18,
-        step_hours=1,
+        max_fxx=m["max_fxx"],
+        step_hours=m["step"],
+        render_rev=hr.RENDER_REV,
     )
 
 
@@ -64,17 +83,18 @@ def config():
 def point():
     field = request.args.get("field", "refc")
     try:
-        run = _parse_run(request.args.get("run"))
+        model = _model()
+        run = _parse_run(request.args.get("run"), model)
         fxx = int(request.args.get("fxx", "0"))
         lat = float(request.args.get("lat"))
         lon = float(request.args.get("lon"))
-        val = hr.sample(field, run, fxx, lat, lon)
+        f = hr.spec(field, model)
+        val = hr.sample(field, run, fxx, lat, lon, model)
     except (ValueError, TypeError) as e:
         return jsonify(error=str(e)), 400
     except Exception as e:
         app.logger.error("point failed: %s", e)
         return jsonify(error="sample failed: %s" % e), 502
-    f = hr.FIELDS[field]
     return jsonify(field=field, fxx=fxx, value=val, unit=f["unit"], label=f["label"])
 
 
@@ -115,9 +135,10 @@ def panel():
 def overlay():
     field = request.args.get("field", "refc")
     try:
-        run = _parse_run(request.args.get("run"))
+        model = _model()
+        run = _parse_run(request.args.get("run"), model)
         fxx = int(request.args.get("fxx", "0"))
-        path = hr.render(field, run, fxx)
+        path = hr.render(field, run, fxx, model)
     except ValueError as e:
         return jsonify(error=str(e)), 400
     except Exception as e:                       # fetch/render failure
@@ -127,11 +148,81 @@ def overlay():
     return resp
 
 
+def _map_args():
+    """(model, field, run, fxx, region) for the static map routes."""
+    model = _model()
+    field = request.args.get("field", "refc")
+    region = request.args.get("region", "conus")
+    run = _parse_run(request.args.get("run"), model)
+    fxx = int(request.args.get("fxx", "0"))
+    return model, field, run, fxx, region
+
+
+@app.route("/api/map")
+def static_map():
+    """A finished map: borders, title, city values, colorbar. Made to be posted."""
+    try:
+        model, field, run, fxx, region = _map_args()
+        path = hr.render_map(field, run, fxx, region, model)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        app.logger.error("map failed: %s\n%s", e, traceback.format_exc())
+        return jsonify(error="render failed: %s" % e), 502
+    name = "%s_%s_%s_f%03d_%s.png" % (model, field, run.strftime("%Y%m%d%H"), fxx, region)
+    resp = send_file(path, mimetype="image/png", max_age=86400,
+                     as_attachment=request.args.get("dl") == "1", download_name=name)
+    return resp
+
+
+@app.route("/share")
+def share():
+    """
+    One static map on a page of its own. A bare PNG link posts as a bare link;
+    this carries the Open Graph tags that make Facebook and the rest show the
+    map itself. The run is pinned in the URL, so the picture never changes
+    under a post.
+    """
+    try:
+        model, field, run, fxx, region = _map_args()
+        f = hr.spec(field, model)
+        if region not in hr.REGIONS:
+            raise ValueError("unknown region %r" % region)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    q = "model=%s&field=%s&run=%s&fxx=%d&region=%s" % (
+        model, field, run.strftime("%Y%m%d%H"), fxx, region)
+    root = request.url_root.replace("http://", "https://")
+    img = "%sapi/map?%s" % (root, q)
+    title = escape("%s %s, %s" % (hr.MODELS[model]["name"], f["label"],
+                                  hr.REGIONS[region]["label"]))
+    desc = escape(hr._when(run, fxx, hr.REGIONS[region]["tz"]).replace("  ·  ", ", "))
+    return Response(
+        "<!doctype html><html lang=en><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>%(t)s</title>"
+        "<meta property='og:type' content='website'>"
+        "<meta property='og:title' content='%(t)s'>"
+        "<meta property='og:description' content='%(d)s'>"
+        "<meta property='og:image' content='%(i)s'>"
+        "<meta property='og:image:width' content='%(w)d'>"
+        "<meta property='og:image:height' content='%(h)d'>"
+        "<meta name='twitter:card' content='summary_large_image'>"
+        "<style>body{margin:0;background:#0b1017;color:#e8eef6;font-family:-apple-system,"
+        "'Segoe UI',Roboto,Helvetica,Arial,sans-serif;text-align:center}"
+        "img{max-width:100%%;height:auto;display:block;margin:0 auto}"
+        "p{font-size:14px;margin:14px}a{color:#4ea3ff}</style>"
+        "<img src='%(i)s' alt='%(t)s'>"
+        "<p>%(d)s</p><p><a href='/'>Open the live map</a></p></html>"
+        % dict(t=title, d=desc, i=escape(img), w=hr.MAP_W, h=hr.MAP_H),
+        mimetype="text/html")
+
+
 @app.route("/api/legend")
 def legend():
     field = request.args.get("field", "refc")
     try:
-        png = hr.render_legend(field)
+        png = hr.render_legend(field, _model())
     except ValueError as e:
         return jsonify(error=str(e)), 400
     return Response(png, mimetype="image/png",

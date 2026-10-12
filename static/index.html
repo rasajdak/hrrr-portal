@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>HRRR Interpretation Portal</title>
+<title>Model Interpretation Portal</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   :root{
@@ -76,6 +76,22 @@
   .leaflet-popup-tip{background:#0f1723}
   .leaflet-popup-content{margin:9px 12px;font-size:12.5px} .leaflet-popup-content b{color:var(--accent)}
 
+  /* static map sheet */
+  #share{position:absolute;inset:0;z-index:2000;background:rgba(5,8,12,.78);display:none;
+    align-items:center;justify-content:center;padding:18px}
+  #share.on{display:flex}
+  #sharebox{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;
+    width:min(1100px,100%);max-height:100%;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  #sharehead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  #sharehead .sp{flex:1}
+  #sharehead a.btn{font-size:12.5px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:6px 9px;text-decoration:none}
+  #sharehead a.btn:hover{border-color:var(--accent)}
+  #shareimgwrap{position:relative;background:#fff;border-radius:8px;overflow:hidden;aspect-ratio:16/10}
+  #shareimg{display:block;width:100%;height:auto}
+  #sharemsg{position:absolute;inset:0;display:grid;place-items:center;font-size:13px;color:#3a4048;background:#f3f1ec}
+  #sharenote{font-size:11px;color:var(--muted);margin-top:8px}
+
   @media (max-width:720px){#bar h1{width:100%} #legend{display:none} #lead{font-size:18px} #meteo{width:230px}}
 </style>
 </head>
@@ -83,7 +99,11 @@
 <div id="map"></div>
 
 <div id="bar">
-  <h1>HRRR Interpretation Portal<small>NOAA High-Resolution Rapid Refresh · raw GRIB2 · 3 km</small></h1>
+  <h1>Model Interpretation Portal<small id="modeldesc">NOAA forecast models · raw GRIB2</small></h1>
+  <div class="group">
+    <label>Model</label>
+    <select id="model"></select>
+  </div>
   <div class="group">
     <label>Field</label>
     <select id="field"></select>
@@ -101,11 +121,27 @@
     </select>
   </div>
   <div class="group" id="opwrap"><label>Opacity</label><input type="range" id="opacity" min="20" max="100" value="82" /></div>
+  <button id="sharebtn" title="A finished map image you can save or post">Static map</button>
   <span class="pill" id="runpill">connecting…</span>
 </div>
 
+<div id="share">
+  <div id="sharebox">
+    <div id="sharehead">
+      <div class="group"><label>Region</label><select id="region"></select></div>
+      <span class="sp"></span>
+      <a class="btn" id="sharedl" href="#">Download PNG</a>
+      <button id="sharecopy">Copy share link</button>
+      <a class="btn" id="shareopen" href="#" target="_blank" rel="noopener">Open image</a>
+      <button id="shareclose">Close</button>
+    </div>
+    <div id="shareimgwrap"><img id="shareimg" alt="Static forecast map" /><div id="sharemsg">drawing the map…</div></div>
+    <div id="sharenote">The share link opens a page that shows this exact map, pinned to this run, with a preview image when posted.</div>
+  </div>
+</div>
+
 <div id="status"></div>
-<a class="credit" href="https://rapidrefresh.noaa.gov/hrrr/" target="_blank" rel="noopener">Data: NOAA HRRR via AWS Open Data · rendered from raw GRIB2</a>
+<a class="credit" id="credit" href="https://registry.opendata.aws/collab/noaa/" target="_blank" rel="noopener">Data: NOAA via AWS Open Data · rendered from raw GRIB2</a>
 
 <div id="meteo">
   <div class="mh">
@@ -206,8 +242,8 @@
   function tileField(k){ return TILE_FIELDS.find(function(x){return x.key===k;}); }
 
   // ---- state ----
-  var CFG=null, field="refc", fxx=0, run=null, bounds=null, opacity=0.82;
-  var overlay=null;                       // L.imageOverlay for the HRRR field
+  var CFG=null, MODEL="hrrr", STEP=1, field="refc", fxx=0, run=null, bounds=null, opacity=0.82;
+  var overlay=null;                       // L.imageOverlay for the model field
   var tileLayer=null;                     // L.tileLayer for an Observed layer
   var activeLayer=null;                   // whichever layer opacity should target
   var activeIsTile=false;
@@ -220,12 +256,12 @@
   // fields render smooth (gouraud) now, so no pixelation on zoom
   function applyCrisp(){}
 
-  // bump when the renderer changes so browsers don't serve stale cached PNGs
-  var RENDER_VERSION="g3-2400";
+  // the server's render revision rides along so browsers don't serve stale cached PNGs
   function overlayUrl(f){
-    return "/api/overlay?field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+
-           "&fxx="+(f===undefined?fxx:f)+"&rv="+RENDER_VERSION;
+    return "/api/overlay?model="+MODEL+"&field="+encodeURIComponent(field)+"&run="+encodeURIComponent(run)+
+           "&fxx="+(f===undefined?fxx:f)+"&rv="+CFG.render_rev;
   }
+  function pad(h){ return (h<10?"0":"")+h; }
 
   // run is 'YYYYMMDDHH' in UTC -> Date of the init time
   function runDate(){
@@ -236,13 +272,13 @@
     var vd=validDate();
     $("validloc").textContent=vd.toLocaleString([], {weekday:"short",hour:"numeric",minute:"2-digit"});
     $("validutc").textContent=("0"+vd.getUTCHours()).slice(-2)+"Z";
-    $("lead").innerHTML="F+"+(fxx<10?"0":"")+fxx+' <span>lead time</span>';
+    $("lead").innerHTML="F+"+pad(fxx)+' <span>lead time</span>';
     $("fhr").textContent=fxx; $("slider").value=fxx;
   }
 
   function draw(){
     var url=overlayUrl();
-    status("rendering "+field+" F"+(fxx<10?"0":"")+fxx+" …");
+    status("rendering "+field+" F"+pad(fxx)+" …");
     // pre-load into an Image so we can detect success/failure and swap cleanly
     var img=new Image();
     img.onload=function(){
@@ -273,12 +309,13 @@
 
   function activateHrrr(k){
     activeIsTile=false; radarMode=false; clearRadarLayers();
-    $("slider").max=CFG.max_fxx; $("slider").step=1; $("fmax").textContent=CFG.max_fxx;
+    $("slider").max=CFG.max_fxx; $("slider").step=STEP; $("fmax").textContent=CFG.max_fxx;
+    $("sharebtn").disabled=false;
     if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     var f=CFG.fields.find(function(x){return x.key===k;});
     $("legcustom").classList.remove("on"); $("legimg").style.display="";
     $("legtitle").textContent=f.label+" ("+f.unit+")";
-    $("legimg").src="/api/legend?field="+k;
+    $("legimg").src="/api/legend?model="+MODEL+"&field="+k+"&rv="+CFG.render_rev;
     setTimelineEnabled(true);
     if(fxx<f.min_fxx) fxx=f.min_fxx;
     prefetched=false;                 // new field -> new frames to warm
@@ -288,6 +325,7 @@
 
   function activateTile(tf){
     stop(); activeIsTile=true; radarMode=false; closeMeteo(); clearRadarLayers();
+    $("sharebtn").disabled=true;
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);  // no HRRR/observed overlap
     if(tileLayer) map.removeLayer(tileLayer);
     tileLayer=L.tileLayer(tf.url(),{opacity:opacity,maxNativeZoom:tf.maxNativeZoom,
@@ -334,6 +372,7 @@
   function clearRadarLayers(){ radarLayers.forEach(function(l){ map.removeLayer(l); }); radarLayers=[]; }
   function activateRadar(tf){
     stop(); activeIsTile=true; radarMode=true; closeMeteo();
+    $("sharebtn").disabled=true;
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);
     if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     clearRadarLayers();
@@ -367,13 +406,14 @@
 
   // ---- timeline dispatch (HRRR forecast hours vs radar time frames) ----
   function tlSet(v){ if(radarMode) setRadarIdx(v); else setFxx(v); }
-  function tlStep(d){ if(radarMode) setRadarIdx(radarIdx+d); else setFxx(fxx+d); }
+  function tlStep(d){ if(radarMode) setRadarIdx(radarIdx+d); else setFxx(fxx+d*STEP); }
   function tlNext(){ if(radarMode){ var n=radarIdx+1; if(n>=radarTimes.length)n=0; setRadarIdx(n); }
-                     else { var n=fxx+1; if(n>CFG.max_fxx)n=0; setFxx(n); } }
+                     else { var n=fxx+STEP; if(n>CFG.max_fxx)n=0; setFxx(n); } }
 
   function setFxx(v){
     if(activeIsTile) return;
     var f=CFG.fields.find(function(x){return x.key===field;});
+    v=Math.round(v/STEP)*STEP;          // frames sit on the model's step
     fxx=Math.max(f.min_fxx||0,Math.min(CFG.max_fxx, v)); draw();
   }
 
@@ -397,7 +437,7 @@
   var playing=false,timer=null,playBtn=$("play"),prefetched=false;
   function prefetch(){                 // warm all HRRR frames so the loop is smooth
     if(prefetched||activeIsTile) return; prefetched=true;
-    for(var h=0;h<=CFG.max_fxx;h++){ var im=new Image(); im.src=overlayUrl(h); }
+    for(var h=(curField().min_fxx||0);h<=CFG.max_fxx;h+=STEP){ var im=new Image(); im.src=overlayUrl(h); }
   }
   function tick(){ tlNext(); }
   function play(){ if(activeIsTile&&!radarMode)return; playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
@@ -417,7 +457,7 @@
   function fmtVal(v,f){ return v==null ? "—" : (Math.abs(v)>=100?Math.round(v):v)+" "+f.unit; }
 
   map.on("click",function(e){
-    if(activeIsTile) return;            // point-probe applies to HRRR fields only
+    if(activeIsTile) return;            // point-probe applies to model fields only
     probeLatLng=e.latlng;
     if(!probeMarker){ probeMarker=L.circleMarker(e.latlng,{radius:6,color:"#4ea3ff",weight:2,fillColor:"#4ea3ff",fillOpacity:.5}).addTo(map); }
     else probeMarker.setLatLng(e.latlng);
@@ -436,9 +476,9 @@
     series=new Array(CFG.max_fxx+1).fill(undefined);
     $("meteoTitle").textContent=f.label;
     $("meteoSub").textContent=ll.lat.toFixed(3)+"°, "+ll.lng.toFixed(3)+"°  ·  loading…";
-    for(var h=(f.min_fxx||0);h<=CFG.max_fxx;h++){
+    for(var h=(f.min_fxx||0);h<=CFG.max_fxx;h+=STEP){
       (function(hh){
-        fetch("/api/point?field="+field+"&run="+run+"&fxx="+hh+"&lat="+ll.lat+"&lon="+ll.lng)
+        fetch("/api/point?model="+MODEL+"&field="+field+"&run="+run+"&fxx="+hh+"&lat="+ll.lat+"&lon="+ll.lng)
           .then(function(r){return r.json();})
           .then(function(j){ if(tok!==seriesToken)return; series[hh]=(j&&typeof j.value==="number")?j.value:null; drawMeteo(); })
           .catch(function(){ if(tok!==seriesToken)return; series[hh]=null; drawMeteo(); });
@@ -451,10 +491,13 @@
     var f=curField(), svg=$("meteoChart"), W=300,H=78, pad=4;
     // current-hour readout
     var cur=series[fxx];
-    $("meteoNow").innerHTML=(typeof cur==="number"?cur:(cur===null?"n/a":"…"))+
-      ' <small>'+f.unit+" · F+"+(fxx<10?"0":"")+fxx+"</small>";
+    var shown=(typeof cur==="number"?cur:(cur===null?"n/a":"…"));
+    // a categorical field (precipitation type) reads as its name, not its code
+    if(f.cats && typeof cur==="number") shown=f.cats[Math.round(cur)-1]||"None";
+    $("meteoNow").innerHTML=shown+' <small>'+(f.cats?"":f.unit+" · ")+"F+"+pad(fxx)+"</small>";
     // loading progress
-    var done=series.filter(function(v){return v!==undefined;}).length, total=series.length-(f.min_fxx||0);
+    var done=series.filter(function(v){return v!==undefined;}).length,
+        total=Math.floor((CFG.max_fxx-(f.min_fxx||0))/STEP)+1;
     $("meteoSub").textContent=probeLatLng.lat.toFixed(3)+"°, "+probeLatLng.lng.toFixed(3)+"°"+(done<total?"  ·  loading "+done+"/"+total:"");
     // line chart
     var pts=[]; for(var h=0;h<series.length;h++){ if(typeof series[h]==="number") pts.push([h,series[h]]); }
@@ -476,27 +519,93 @@
   // called from draw() when the forecast hour changes — just move the cursor
   function updateMeteoCursor(){ if(series) drawMeteo(); }
 
-  // ---- boot ----
-  status("loading configuration…");
-  fetch("/api/config").then(function(r){return r.json();}).then(function(cfg){
-    CFG=cfg; run=cfg.latest_run; bounds=cfg.bounds;
-    $("runpill").textContent="run "+cfg.latest_run_label;
-    $("slider").max=cfg.max_fxx; $("fmax").textContent=cfg.max_fxx;
-    // field dropdown, grouped into <optgroup> by category
-    var sel=$("field"), curGroup=null, og=null;
-    cfg.fields.forEach(function(f){
-      if(f.group!==curGroup){ curGroup=f.group; og=document.createElement("optgroup"); og.label=f.group; sel.appendChild(og); }
-      var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og.appendChild(o);
+  // ---- static map sheet ----
+  var REGION="conus";
+  try{ REGION=localStorage.getItem("region")||"conus"; }catch(e){}
+  function mapQuery(){
+    return "model="+MODEL+"&field="+encodeURIComponent(field)+"&run="+run+"&fxx="+fxx+"&region="+REGION;
+  }
+  function drawShare(){
+    var q=mapQuery(), img=$("shareimg"), msg=$("sharemsg");
+    msg.textContent="drawing the map…"; msg.style.display="grid";
+    $("sharedl").href="/api/map?"+q+"&dl=1";
+    $("shareopen").href="/api/map?"+q;
+    img.onload=function(){ msg.style.display="none"; };
+    img.onerror=function(){
+      fetch("/api/map?"+q).then(function(r){return r.json();}).then(function(j){
+        msg.textContent=(j&&j.error)?j.error:"the map could not be drawn";
+      }).catch(function(){ msg.textContent="the map could not be drawn"; });
+    };
+    img.src="/api/map?"+q;
+  }
+  $("sharebtn").addEventListener("click",function(){
+    if(activeIsTile||!CFG) return;
+    stop(); $("share").classList.add("on"); drawShare();
+  });
+  function closeShare(){ $("share").classList.remove("on"); }
+  $("shareclose").addEventListener("click",closeShare);
+  $("share").addEventListener("click",function(e){ if(e.target===$("share")) closeShare(); });
+  $("region").addEventListener("change",function(e){
+    REGION=e.target.value;
+    try{ localStorage.setItem("region",REGION); }catch(err){}
+    drawShare();
+  });
+  $("sharecopy").addEventListener("click",function(){
+    var url=location.origin+"/share?"+mapQuery(), b=$("sharecopy");
+    function done(){ b.textContent="Copied"; setTimeout(function(){ b.textContent="Copy share link"; },1600); }
+    if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done,function(){ prompt("Share link",url); });
+    else prompt("Share link",url);
+  });
+
+  // ---- boot + model switch ----
+  function buildTicks(){
+    var t=$("ticks"), every=STEP; t.innerHTML="";
+    [1,3,6,12,24,48].some(function(n){ every=n; return n>=STEP && CFG.max_fxx/n<=9; });
+    for(var h=0;h<=CFG.max_fxx;h+=every){ var sp=document.createElement("span"); sp.textContent="F"+h; t.appendChild(sp); }
+  }
+  function loadModel(m, first){
+    stop();
+    status("loading "+m.toUpperCase()+" …");
+    return fetch("/api/config?model="+m).then(function(r){return r.json();}).then(function(cfg){
+      CFG=cfg; MODEL=cfg.model; STEP=cfg.step_hours; run=cfg.latest_run; bounds=cfg.bounds;
+      var me=cfg.models.find(function(x){return x.key===MODEL;});
+      $("modeldesc").textContent=me.desc+" · raw GRIB2";
+      $("credit").textContent="Data: NOAA "+me.label+" via AWS Open Data · rendered from raw GRIB2";
+      $("runpill").textContent="run "+cfg.latest_run_label;
+      $("slider").max=cfg.max_fxx; $("fmax").textContent=cfg.max_fxx;
+      if(first){
+        cfg.models.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("model").appendChild(o); });
+        cfg.regions.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("region").appendChild(o); });
+        if(!cfg.regions.some(function(x){return x.key===REGION;})) REGION="conus";
+        $("region").value=REGION;
+      }
+      $("model").value=MODEL;
+      // field dropdown, grouped into <optgroup> by category
+      var sel=$("field"), curGroup=null, og=null; sel.innerHTML="";
+      cfg.fields.forEach(function(f){
+        if(f.group!==curGroup){ curGroup=f.group; og=document.createElement("optgroup"); og.label=f.group; sel.appendChild(og); }
+        var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og.appendChild(o);
+      });
+      // observed (external tile) fields as their own group
+      var og2=document.createElement("optgroup"); og2.label="Observed";
+      TILE_FIELDS.forEach(function(f){ var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og2.appendChild(o); });
+      sel.appendChild(og2);
+      buildTicks();
+      // keep the field across a model switch when the new model carries it
+      var keep=tileField(field)||cfg.fields.some(function(f){return f.key===field;});
+      if(!keep) field="refc";
+      sel.value=field;
+      fxx=Math.min(cfg.max_fxx, Math.round(fxx/STEP)*STEP);
+      setField(field);
     });
-    // observed (external tile) fields as their own group
-    var og2=document.createElement("optgroup"); og2.label="Observed";
-    TILE_FIELDS.forEach(function(f){ var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og2.appendChild(o); });
-    sel.appendChild(og2);
-    // ticks
-    var t=$("ticks"); for(var h=0;h<=cfg.max_fxx;h+=3){ var s=document.createElement("span"); s.textContent="F"+h; t.appendChild(s); }
-    setField("refc");
-  }).catch(function(){
-    status("⚠ cannot reach backend — start it with:  python app.py",true);
+  }
+  $("model").addEventListener("change",function(e){
+    loadModel(e.target.value,false).catch(function(){ status("⚠ could not load that model",true); });
+  });
+
+  status("loading configuration…");
+  loadModel("hrrr",true).catch(function(){
+    status("⚠ cannot reach backend. Start it with:  python app.py",true);
     $("runpill").textContent="offline";
   });
 })();

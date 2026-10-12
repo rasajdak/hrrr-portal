@@ -1,32 +1,82 @@
-# HRRR Interpretation Portal
+# Model Interpretation Portal
 
-A small server app that reads **raw HRRR GRIB2** and serves it as selectable,
-animatable map layers — a viewing/interpretation portal for the NOAA
-High-Resolution Rapid Refresh model.
+A small server app that reads **raw model GRIB2** and serves it two ways: as
+selectable, animatable layers on a live map, and as finished static maps made to
+be saved and posted. It began as an HRRR viewer and still lives in a repo named
+for it.
 
-- **Source:** AWS Open Data bucket `noaa-hrrr-bdp-pds` (public, no credentials).
-- **Subsetting:** [Herbie](https://herbie.readthedocs.io) reads each GRIB's `.idx`
-  sidecar and HTTP byte-ranges **only the requested field** (~1 MB), not the
-  ~150 MB file.
-- **Rendering:** cartopy reprojects the native 3 km Lambert grid to Web Mercator
-  PNG, so it registers exactly under a Leaflet `imageOverlay`.
+- **Models:** HRRR (3 km, hourly, 18 h), NAM CONUS nest (3 km, every 6 h, 60 h),
+  RAP (13 km, hourly, 21 h), GFS (0.25 degree, every 6 h, 10 days). All from
+  NOAA's public AWS buckets, no credentials. Add one in `MODELS`.
+- **Subsetting:** each GRIB's `.idx` sidecar gives every message's byte offset,
+  so one HTTP Range request pulls **only the requested field** (~1 MB), not the
+  ~150 MB file. This is done directly with urllib; Herbie is no longer used.
+- **Rendering:** cartopy reprojects the native grid to a Web Mercator PNG, so it
+  registers exactly under a Leaflet `imageOverlay`.
 - **Serving:** Flask + a content-addressed disk cache (`cache/`), so repeat
-  requests for the same (field, run, hour) are instant.
+  requests for the same (model, field, run, hour) are instant.
 
-## Fields (35, grouped in the picker)
-- **Radar & storms** — composite reflectivity · 1 km AGL reflectivity · echo top · 2–5 km updraft helicity
-- **Instability** — surface / mixed-layer / most-unstable CAPE · surface CIN · best lifted index · precipitable water
-- **Rotation** — 0–3 km & 0–1 km storm-relative helicity
+## Updating the running droplet
+
+`/opt/hrrr-portal` is a **git checkout**, so the deploy is a pull, not an rsync.
+An rsync over it leaves the checkout dirty and the next pull refuses.
+
+```bash
+git push                                    # from the Mac
+ssh -i ~/.ssh/hrrr_deploy root@DROPLET_IP '
+    sudo -u hrrr git -C /opt/hrrr-portal pull --ff-only &&
+    systemctl restart hrrr-portal'
+```
+
+Two things that cost real time on 2026-09-17, both worth knowing before the
+next deploy:
+
+- **The deploy key authenticates as `root`, not as `hrrr`.** `~/.ssh/hrrr_deploy`
+  was installed in root's `authorized_keys` only, so `hrrr@` gives
+  `Permission denied (publickey)` however right the command looks. There is no
+  `~/.ssh/config` entry either, so the key has to be named with `-i` or ssh
+  offers the default identity and fails. Worth fixing properly by appending
+  `hrrr_deploy.pub` to `/home/hrrr/.ssh/authorized_keys`, after which the
+  documented `hrrr@` form works.
+- **Do not hot-patch files on the server.** The Esri basemap swap was edited
+  directly into `/opt/hrrr-portal/static/index.html` and never committed there,
+  so the checkout sat one commit behind with an uncommitted change that was
+  byte-identical to the commit it was blocking. The pull refused until it was
+  stashed. Edit here, commit, push, pull.
+
+## Fields (56 on HRRR, grouped in the picker)
+- **Radar & storms** — composite and 1 km reflectivity · hourly max reflectivity · echo top · VIL · 2–5, 0–3 and 0–2 km updraft helicity · max updraft and downdraft · max hail size · lightning
+- **Instability** — surface / mixed-layer / most-unstable / 0–3 km CAPE · surface CIN · best lifted index · precipitable water
+- **Rotation & shear** — 0–3 km & 0–1 km storm-relative helicity · 0–6 km & 0–1 km bulk shear
 - **Surface weather** — 2 m temp · dewpoint · RH · 10 m wind · gust · MSLP · visibility
-- **Precipitation** — 1-hr precip · precip rate · snow depth
+- **Precipitation** — per-frame precip · total since run start · precip rate
+- **Snow & ice** — total snowfall (the model's own, and at 10:1) · per-frame snowfall · precipitation type · freezing rain · share frozen · snow depth · water in the snowpack · snow cover · freezing level
 - **Clouds & radiation** — total cloud cover · ceiling · downward shortwave · PBL height
 - **Smoke (HRRR-Smoke)** — near-surface smoke · vertically-integrated smoke
 - **Upper air (pressure levels)** — 500 mb height · 850/500 mb temp · 700 mb RH · 700 mb vertical velocity · 250 mb (jet) & 850 mb wind speed
 
-Forecast hours 0–18, scrub or animate. Optional live NEXRAD overlay for
-forecast-vs-reality comparison. Pressure-level fields pull from the HRRR `prs`
-product; jet-level winds are the U/V magnitude. Add more by extending `FIELDS`
-in `hrrr_render.py`.
+Not every model carries every field: NAM has 43, RAP 41, GFS 33. A field's
+`models` says who has it and `per` holds the per-model differences (NAM and GFS
+call sea-level pressure `PRMSL`, and so on). Add more by extending `FIELDS` in
+`hrrr_render.py`.
+
+Two things the files do not hand over directly:
+
+- **NAM run totals.** NAM resets its accumulations every 3 hours, so a storm
+  total is the sum of the buckets (`accum`).
+- **GFS snowfall.** GFS posts no snowfall field. Its snow is each 6-hour
+  precipitation bucket times the share of that window it was snowing (`CSNOW`
+  average), at 10:1, summed. Running totals are kept per frame in `cache/acc_*`
+  and pruned after 36 hours.
+
+## Static maps
+`/api/map` draws a finished 1600 x 1000 picture in a Lambert conformal fitted to
+one of 13 regions (`REGIONS`): land and water, state and national borders, a
+title with init and valid times, the value at each city that fits, the maximum
+in view and a colorbar. The **Static map** button on the page opens it with a
+region picker, a download button and a share link. `/share` wraps the same image
+in a page with Open Graph tags, pinned to the run, so a posted link shows the
+map itself.
 
 ## Interpretation features
 - **Click-to-probe** — click anywhere on the map to read the nearest grid-point
@@ -99,13 +149,19 @@ visitor never waits:
 | route | purpose |
 |-------|---------|
 | `GET /` | portal UI |
-| `GET /api/config` | fields, extent bounds, latest run |
-| `GET /api/overlay?field=&run=&fxx=` | rendered field PNG |
-| `GET /api/legend?field=` | colorbar PNG |
+| `GET /api/config?model=` | models, that model's fields and latest run, regions |
+| `GET /api/overlay?model=&field=&run=&fxx=` | rendered field PNG |
+| `GET /api/map?model=&field=&run=&fxx=&region=` | finished static map PNG (`dl=1` to download) |
+| `GET /share?...` | the static map on a page with link-preview tags |
+| `GET /api/point?model=&field=&run=&fxx=&lat=&lon=` | one grid-point value |
+| `GET /api/legend?model=&field=` | colorbar PNG |
+
+`model` defaults to `hrrr` everywhere, so every older URL still works.
 
 ## Notes
-- `run` defaults to the latest likely-posted HRRR init (now − 1 h, UTC). Pass an
-  explicit `YYYYMMDDHH` to pin a run.
+- `run` defaults to the newest run posted for that model. HRRR counts as posted
+  once hour 0 lands; the others wait for their last frame, so a loop never runs
+  off the end of a half-uploaded run. Pass an explicit `YYYYMMDDHH` to pin a run.
 - HRRR is CONUS-only. `refc`/precip are convection fields; `apcp` needs F ≥ 1.
 - This renders full-CONUS overlays per field/hour. For per-tile zoomable serving
   you'd swap the imageOverlay for a `/tiles/{z}/{x}/{y}` XYZ endpoint later.
