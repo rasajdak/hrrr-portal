@@ -68,7 +68,7 @@ IMG_WIDTH = 2400  # px; height derived from the mercator aspect of EXTENT
 
 # Part of every cache key. Bump it when a colormap or the drawing changes, or a
 # PNG rendered the old way is served forever.
-RENDER_REV = "m8"
+RENDER_REV = "m9"
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -1169,12 +1169,12 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     halo = [pe.withStroke(linewidth=2.6, foreground="white")]
     cxy = proj.transform_points(pc, np.array([c[2] for c in CITIES]), np.array([c[1] for c in CITIES]))
     kept = []
-    gap = (x1 - x0) * 0.075
+    gap = (x1 - x0) * 0.085                       # a label block is about this wide
     mx, my = (x1 - x0) * 0.03, (y1 - y0) * 0.04
     for (name, _, _), (cx, cy, _) in zip(CITIES, cxy):
         if not (x0 + mx < cx < x1 - mx and y0 + my < cy < y1 - my):
             continue
-        if any(abs(cx - kx) < gap and abs(cy - ky) < gap * 0.45 for kx, ky in kept):
+        if any(abs(cx - kx) < gap and abs(cy - ky) < gap * 0.6 for kx, ky in kept):
             continue
         if len(kept) >= 22:
             break
@@ -1182,7 +1182,10 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         i = np.unravel_index(int(np.argmin((gx - cx) ** 2 + (gy - cy) ** 2)), gx.shape)
         v = float(vals[i])
         ax.plot(cx, cy, "o", ms=3.2, color="#111", mec="white", mew=0.6, zorder=5)
-        shown = math.isfinite(v) and not (f.get("mask_under") and v < f["vmin"]) and not f.get("cats")
+        # no number where the field is blank there: under the bottom of a banded
+        # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
+        blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
+        shown = math.isfinite(v) and not blank and not f.get("cats")
         if shown:
             ax.text(cx, cy + (y1 - y0) * 0.008, _fmt_value(v, f), ha="center", va="bottom",
                     fontsize=14.5, fontweight="bold", color="#111", path_effects=halo, zorder=6)
