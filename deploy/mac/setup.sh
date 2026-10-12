@@ -25,14 +25,22 @@ if [ "${1:-}" = "--remove" ]; then
 fi
 
 # ---- uv, which fetches Python and the map libraries on first run ----
+# An older Mac (macOS 12 on Intel) has no pip wheels for pyproj or ecCodes.
+# There, make a conda-forge environment and point HRRR_PYTHON at its python:
+#   micromamba create -p ~/hrrr-env -c conda-forge python=3.11 numpy \
+#       matplotlib-base cartopy cfgrib eccodes xarray flask
+#   HRRR_PYTHON=~/hrrr-env/bin/python bash deploy/mac/setup.sh
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-if ! command -v uv >/dev/null; then
-    echo "Installing uv ..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+if [ -n "${HRRR_PYTHON:-}" ]; then
+    RUN=("$HRRR_PYTHON")
+else
+    if ! command -v uv >/dev/null; then
+        echo "Installing uv ..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    fi
+    RUN=("$(command -v uv)" run -q --python 3.11 --with numpy --with matplotlib
+         --with cartopy --with cfgrib --with eccodes --with xarray python)
 fi
-UV="$(command -v uv)"
-RUN=("$UV" run -q --python 3.11 --with numpy --with matplotlib --with cartopy
-     --with cfgrib --with eccodes --with xarray python)
 
 # ---- half the cores, at least 1, at most 6: the Mac stays usable ----
 CORES="$(sysctl -n hw.ncpu)"
@@ -57,11 +65,8 @@ cat > "$PLIST" <<PLIST_EOF
   <key>Label</key><string>$LABEL</string>
   <key>WorkingDirectory</key><string>$REPO</string>
   <key>ProgramArguments</key><array>
-    <string>$UV</string><string>run</string><string>-q</string><string>--python</string><string>3.11</string>
-    <string>--with</string><string>numpy</string><string>--with</string><string>matplotlib</string>
-    <string>--with</string><string>cartopy</string><string>--with</string><string>cfgrib</string>
-    <string>--with</string><string>eccodes</string><string>--with</string><string>xarray</string>
-    <string>python</string><string>prewarm.py</string>
+$(printf '    <string>%s</string>\n' "${RUN[@]}")
+    <string>prewarm.py</string>
     <string>--workers</string><string>$WORKERS</string>
     <string>--push</string><string>$SERVER</string>
     <string>--key</string><string>$KEY</string>
