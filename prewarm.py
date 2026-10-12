@@ -46,10 +46,12 @@ import loop
 # In each plan:
 #   totals : accumulations, drawn only at the hours a total gets quoted for
 #   loops  : fields that move, drawn every N hours out to a limit
+#   lake   : the lake effect score, drawn only for the regions that have lakes
 # Anything not listed still draws on request.
 LONG = [24, 48, 72, 120, 168, 240]
 MOVING = ["refc_ptype", "refc", "ptype", "t2m", "gust"]
 MOVING_GLOBAL = ["refc_ptype", "ptype", "t2m", "gust"]          # no radar field worth a map
+LAKE_AREAS = ["wny", "greatlakes"]
 
 LEAN = dict(
     areas=["wny", "newyork", "northeast", "conus"],
@@ -57,10 +59,10 @@ LEAN = dict(
     # shared by every region, so regions are cheap here. @tall: upright, for reels
     loop_areas=["wny", "newyork", "northeast", "wny@tall", "northeast@tall"],
     plan={
-        "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=3, to=18),
-        "nam":   dict(totals=["apcp_tot", "snow10"], at=[24, 48, 60], loops=MOVING, every=3, to=60),
-        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=120),
-        "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=120),
+        "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=3, to=18, lake=3),
+        "nam":   dict(totals=["apcp_tot", "snow10"], at=[24, 48, 60], loops=MOVING, every=3, to=60, lake=6),
+        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=120, lake=12),
+        "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=120, lake=12),
     })
 
 WIDE = dict(
@@ -68,10 +70,10 @@ WIDE = dict(
     loop_areas=["wny", "newyork", "northeast", "greatlakes", "conus",
                 "wny@tall", "newyork@tall", "northeast@tall", "greatlakes@tall"],
     plan={
-        "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=1, to=18),
-        "nam":   dict(totals=["apcp_tot", "snow10"], at=[12, 24, 36, 48, 60], loops=MOVING, every=3, to=60),
-        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240),
-        "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240),
+        "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=1, to=18, lake=1),
+        "nam":   dict(totals=["apcp_tot", "snow10"], at=[12, 24, 36, 48, 60], loops=MOVING, every=3, to=60, lake=3),
+        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240, lake=6),
+        "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240, lake=6),
     })
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
@@ -98,6 +100,9 @@ def groups(want=LEAN):
                 continue
             todo = [r for r in AREAS if not os.path.exists(hr.map_path(model, field, run, fxx, r))]
             yield model, run, field, fxx, todo
+        for fxx in range(0, p["to"] + 1, p["lake"]):
+            todo = [r for r in LAKE_AREAS if not os.path.exists(hr.map_path(model, "lake_effect", run, fxx, r))]
+            yield model, run, "lake_effect", fxx, todo
         # then that model's loop, one group per forecast time
         lrun = loop.latest_run(model)
         for m in loop.minutes(model):

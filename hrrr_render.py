@@ -192,6 +192,19 @@ RP_COLORS = ["#a8e6a1", "#5cc35a", "#1f9a36", "#f2e03a", "#f08c1e", "#d7261e",
              "#dfe4fb", "#b9c3f5", "#8e9cec", "#5f6fdc", "#3a45c0", "#262a8f"]
 PTYPE_CATS = ["Rain", "Freezing rain", "Sleet or mix", "Snow"]
 PTYPE_COLORS = ["#3fae49", "#f06292", "#9c5fd1", "#3d8bfd"]
+# Lake effect potential, a 0-100 score (see lake_effect.py), drawn the same way:
+# six steps each for what would fall as rain, as a mix and as snow.
+LAKE_LEVELS = [15, 30, 45, 60, 75, 90]
+LAKE_COLORS = ["#d5efcf", "#a3d99b", "#62b96a", "#2f9148", "#156b32", "#084420",
+               "#f9cdd8", "#f3a0b8", "#e86a95", "#d13d78", "#a81f66", "#7a124f",
+               "#cfe8f3", "#8cc5e3", "#4a90d9", "#3b5fcf", "#5a3fc0", "#3a1a8a"]
+# A field that is an amount and a kind at once travels as group * 100 + amount
+# (amount 0..99) and is drawn from a `typed` entry: the amount's levels, one run
+# of colours per group, the group names, and how the scale reads light to heavy.
+#   values : the amount is worth printing at cities and as the map's maximum
+RP_TYPED = dict(levels=RP_LEVELS, colors=RP_COLORS, groups=RP_GROUPS, span="light to heavy")
+LAKE_TYPED = dict(levels=LAKE_LEVELS, colors=LAKE_COLORS, groups=RP_GROUPS, span="slight to intense",
+                  values=True)
 
 
 # field key -> everything needed to fetch + draw it
@@ -239,7 +252,7 @@ FIELDS = {
     # composite reflectivity for how hard, the type flags for what: the picture
     # a TV "futurecast" shows. Fetched as group * 100 + dBZ (see _radar_ptype).
     "refc_ptype": dict(group="Radar & storms", label="Radar by precipitation type", unit="dBZ",
-        product="sfc", radar_ptype=True, search=":REFC:", conv=None, vmin=5, vmax=75,
+        product="sfc", radar_ptype=True, typed=RP_TYPED, search=":REFC:", conv=None, vmin=5, vmax=75,
         mask_under=True),
     "refd1": dict(group="Radar & storms", label="Reflectivity (1 km AGL)", unit="dBZ",
         product="sfc", search=":REFD:1000 m above ground:", conv=None, cmap="_nws", vmin=5, vmax=75),
@@ -369,6 +382,11 @@ FIELDS = {
     "snowc": dict(group="Snow & ice", label="Snow cover", unit="%",
         models=("hrrr", "nam"), product="sfc", search=":SNOWC:surface:", conv=None, cmap="Blues",
         vmin=5, vmax=100, mask_under=True),
+    # not a model field: worked out from the lake, the air over it and the wind
+    # (see _lake_effect). RAP's file has no land mask, so it sits this one out.
+    "lake_effect": dict(group="Snow & ice", label="Lake effect potential", unit="of 100",
+        models=("hrrr", "nam", "gfs", "ecmwf"), product="sfc", lake=True, search=":TMP:surface:",
+        conv=None, typed=LAKE_TYPED, vmin=15, vmax=100, mask_under=True),
     "frzlvl": dict(group="Snow & ice", label="Freezing level height", unit="kft",
         models=("hrrr",), product="sfc", search=":HGT:0C isotherm:", conv=M2KFT, cmap="Spectral",
         vmin=0, vmax=16),
@@ -737,10 +755,53 @@ def _radar_ptype(model, run_dt, fxx):
     return np.where(np.isfinite(dbz) & (dbz >= RP_LEVELS[0]), code, np.nan).astype("float32"), lat, lon
 
 
-def _rp_index(dbz, group):
-    """Colour index into RP_COLORS (group * 6 + intensity step); NaN under 5 dBZ."""
-    step = np.digitize(np.nan_to_num(dbz), RP_LEVELS) - 1
-    out = np.asarray(group, dtype="float32") * len(RP_LEVELS) + step
+# What the lake effect score is made from, as NCEP and ECMWF index them
+LAKE_NCEP = dict(tsfc=":TMP:surface:" + INST, land=":LAND:surface:" + INST, ice=":ICEC:surface:" + INST,
+                 t925=":TMP:925 mb:", t850=":TMP:850 mb:", t700=":TMP:700 mb:",
+                 u925=":UGRD:925 mb:", v925=":VGRD:925 mb:", u850=":UGRD:850 mb:", v850=":VGRD:850 mb:",
+                 u700=":UGRD:700 mb:", v700=":VGRD:700 mb:")
+LAKE_ECMWF = dict(tsfc=":sfc:skt:", land=":sfc:lsm:", t925=":pl:t:925:", t850=":pl:t:850:", t700=":pl:t:700:",
+                  u925=":pl:u:925:", v925=":pl:v:925:", u850=":pl:u:850:", v850=":pl:v:850:",
+                  u700=":pl:u:700:", v700=":pl:v:700:")
+
+
+@functools.lru_cache(maxsize=2)          # one frame is drawn for several regions in turn
+def _lake_effect(model, run_dt, fxx):
+    """
+    The lake effect score for one frame, as group * 100 + score: what it would
+    fall as, from the air at 925 mb (snow at -2.5 C and colder, rain above 0.5 C,
+    a mix between: a lake effect layer is well stirred, so the ground runs some
+    5 C warmer than that level, and snow in a heavy band survives to 2 or 3 C). The 2 m temperature is no use here, since over
+    the lake itself it is the lake's. A dozen messages go into it, so they are
+    downloaded side by side; eccodes then decodes them one at a time.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import lake_effect
+    url = _grib_url(model, "sfc", run_dt, fxx)
+    want = LAKE_ECMWF if model == "ecmwf" else LAKE_NCEP
+    spans = {k: _locate(url, pat) for k, pat in want.items()}
+    uniq = sorted(set(spans.values()), key=lambda r: r[0])     # NAM: U and V share a message
+    with ThreadPoolExecutor(6) as ex:
+        raws = dict(zip(uniq, ex.map(lambda r: _http(url, rng=r), uniq)))
+    got, lat, lon = {}, None, None
+    for span in uniq:
+        arrs, lat, lon = _decode(model, raws[span])
+        names = sorted((k for k, r in spans.items() if r == span), key=lambda k: k[0] != "u")
+        for k, a in zip(names, arrs):                          # a pair comes back U then V
+            got[k] = a
+    score = lake_effect.index(
+        lat, lon, got["tsfc"], got["land"], got.get("ice"), got["t850"], got["t700"],
+        {lv: (got["u%d" % lv], got["v%d" % lv]) for lv in (925, 850, 700)},
+        grid_relative=model in ("hrrr", "nam"))
+    t925 = got["t925"] - 273.15
+    group = np.where(t925 <= -2.5, 2.0, np.where(t925 <= 0.5, 1.0, 0.0))
+    return (group * 100.0 + np.clip(score, 0, 99)).astype("float32"), lat, lon
+
+
+def _rp_index(dbz, group, levels=RP_LEVELS):
+    """Colour index for a typed field (group * steps + intensity step); NaN under the first level."""
+    step = np.digitize(np.nan_to_num(dbz), levels) - 1
+    out = np.asarray(group, dtype="float32") * len(levels) + step
     out[(step < 0) | ~np.isfinite(dbz)] = np.nan
     return out
 
@@ -749,6 +810,8 @@ def _fetch(f, model, run_dt, fxx):
     """(data, lat, lon) for a field spec, raw units, on the model's grid."""
     if f.get("radar_ptype"):
         return _radar_ptype(model, run_dt, fxx)
+    if f.get("lake"):
+        return _lake_effect(model, run_dt, fxx)
     if f.get("accum"):
         return _accumulate(f, model, run_dt, fxx)
     url = _grib_url(model, f.get("product", "sfc"), run_dt, fxx)
@@ -853,8 +916,8 @@ def sample(field_key, run_dt, fxx, lat0, lon0, model="hrrr"):
     d = (latf - lat0) ** 2 + (lonf - lon0) ** 2
     i = int(np.argmin(d))
     v = vals[i]
-    if f.get("radar_ptype") and math.isfinite(v):
-        v = v % 100                                  # the echo, without the type
+    if f.get("typed") and math.isfinite(v):
+        v = v % 100                                  # the amount, without the type
     return None if not math.isfinite(v) else round(float(v), 2)
 
 
@@ -871,10 +934,10 @@ def _clear(color):
 def _cmap_norm(f):
     if f.get("cmap") == "_nws":
         return _nws_reflectivity()
-    if f.get("radar_ptype"):
-        cmap = ListedColormap(RP_COLORS)
+    if f.get("typed"):
+        cmap = ListedColormap(f["typed"]["colors"])
         cmap.set_bad((0, 0, 0, 0))
-        return cmap, BoundaryNorm(range(len(RP_COLORS) + 1), cmap.N)
+        return cmap, BoundaryNorm(range(cmap.N + 1), cmap.N)
     if f.get("levels"):
         levels, colors = f["levels"], f["colors"]
         if len(colors) == len(levels):               # last colour = past the top
@@ -900,7 +963,7 @@ def _cmap_norm(f):
 
 def _shading(f):
     # Blending between categories would invent sleet along every rain/snow line.
-    return "nearest" if f.get("cats") or f.get("radar_ptype") else "gouraud"
+    return "nearest" if f.get("cats") or f.get("typed") else "gouraud"
 
 
 def _cache_path(*parts):
@@ -939,8 +1002,8 @@ def _draw(f, data, lat, lon, out_path, stride):
 
     # downsample the grid for rendering — far fewer triangles for gouraud to
     # rasterize (the expensive part), smoothed back over the gaps by the shading.
-    if f.get("radar_ptype"):
-        data = _rp_index(data % 100, data // 100)
+    if f.get("typed"):
+        data = _rp_index(data % 100, data // 100, f["typed"]["levels"])
     d = data[::stride, ::stride]
     la = lat[::stride, ::stride]
     lo = lon[::stride, ::stride]
@@ -960,11 +1023,12 @@ def _draw(f, data, lat, lon, out_path, stride):
 def _colorbar(f, ax, tick_color, edge_color, size):
     cmap, norm = _cmap_norm(f)
     banded = bool(f.get("levels")) and not f.get("cats")
-    if f.get("radar_ptype"):
+    if f.get("typed"):
+        t = f["typed"]
         cb = matplotlib.colorbar.ColorbarBase(ax, cmap=cmap, norm=norm, orientation="horizontal")
-        n = len(RP_LEVELS)
-        cb.set_ticks([n * g + n / 2.0 for g in range(len(RP_GROUPS))])
-        cb.set_ticklabels(["%s, light to heavy" % g for g in RP_GROUPS])
+        n = len(t["levels"])
+        cb.set_ticks([n * g + n / 2.0 for g in range(len(t["groups"]))])
+        cb.set_ticklabels(["%s, %s" % (g, t["span"]) for g in t["groups"]])
         cb.ax.tick_params(labelsize=size, colors=tick_color, length=0)
         cb.outline.set_edgecolor(edge_color)
         return cb
@@ -1510,18 +1574,20 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     sigma = max(1.5, 9.0 / max(px_per_cell, 0.1))
     passes = int(min(14, round(1.5 * sigma * sigma)))
     bands = _bands(f)
-    if f.get("radar_ptype"):
+    typed = f.get("typed")
+    if typed:
         # Two things to smooth, and they cannot be smoothed as one number: the
         # echo, and which type owns each spot. The type is settled by smoothing
         # a yes/no layer per group and taking the strongest, so a rain/snow
         # line is a clean edge rather than a band of invented mix.
         has = np.isfinite(sv)
         dbz, grp = np.where(has, sv % 100, 0.0), np.where(has, sv // 100, -1)
-        k = int(min(6, max(1, round(1500.0 / max(sv.shape)))))
+        k = int(min(12, max(1, round(1500.0 / max(sv.shape)))))
         echo = _smooth(_upsample(_smooth(dbz, passes), k), 2 if k > 1 else 0)
         own = np.argmax(np.stack([_upsample(_smooth((grp == g).astype("float32"), passes), k)
-                                  for g in range(len(RP_GROUPS))]), axis=0)
-        ax.pcolormesh(_upsample(sx, k), _upsample(sy, k), np.ma.masked_invalid(_rp_index(echo, own)),
+                                  for g in range(len(typed["groups"]))]), axis=0)
+        ax.pcolormesh(_upsample(sx, k), _upsample(sy, k),
+                      np.ma.masked_invalid(_rp_index(echo, own, typed["levels"])),
                       cmap=cmap, norm=norm, shading="nearest", zorder=2, rasterized=True)
     elif bands:
         # A banded scale wants real contours: shading a mesh leaves every band
@@ -1567,11 +1633,13 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     for name, cx, cy, major in cities:
         i = np.unravel_index(int(np.argmin((gx - cx) ** 2 + (gy - cy) ** 2)), gx.shape)
         v = float(vals[i])
+        if typed:
+            v = v % 100
         ax.plot(cx, cy, "o", ms=(4.2 if major else 3.0) * ts, color="#111", mec="white", mew=0.8, zorder=5)
         # no number where the field is blank there: under the bottom of a banded
         # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
         blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
-        shown = math.isfinite(v) and not blank and not f.get("cats") and not f.get("radar_ptype")
+        shown = math.isfinite(v) and not blank and not f.get("cats") and (not typed or typed.get("values"))
         if shown:
             ax.text(cx, cy + (y1 - y0) * 0.012 * off, _fmt_value(v, f), ha="center", va="bottom",
                     fontsize=14.5 * ts, fontweight="bold", color="#111", path_effects=halo, zorder=6)
@@ -1587,10 +1655,12 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
 
     # ---- title block ----
     m = MODELS[model]
-    plain = f.get("cats") or f.get("radar_ptype")      # no unit, no single number
+    plain = f.get("cats") or (typed and not typed.get("values"))   # no unit, no single number
     unit = "" if plain else " (%s)" % f["unit"]
     seen = vals[inview[sl]] if inview[sl].shape == vals.shape else vals
     seen = seen[np.isfinite(seen)]
+    if typed:
+        seen = seen % 100
     peak = "Max in view: %s %s" % (_fmt_value(float(seen.max()), f), f["unit"]) if seen.size and not plain else ""
     if dark:
         # Two bands of equal height, text from the left, the same space above
@@ -1630,7 +1700,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         cy = 0.036 if shape == "wide" else 0.034
         cax = fig.add_axes([0.2, cy, 0.6, 0.018 if shape == "wide" else 0.012])
         _colorbar(f, cax, "#222", "#444", 11.5 * (1.0 if shape == "wide" else 1.2))
-        if not plain:
+        if not plain and not typed:
             fig.text(0.192, cy + 0.009 if shape == "wide" else cy + 0.006, f["unit"], fontsize=12,
                      fontweight="medium", color="#222", va="center", ha="right")
         fig.text(0.989, 0.014 if shape == "wide" else 0.008, "Data: %s" % credit(model), fontsize=9.5,
