@@ -584,10 +584,17 @@
     if(MODE!=="static"||!$("readyonly").checked) return null;
     var h=readyHours(); return h.length?h:null;
   }
-  function loadReady(){
-    var m=MODEL, r=run;
-    return fetch("/api/ready?model="+m+"&run="+r).then(function(x){return x.json();}).then(function(j){
+  // pickRun: let the server choose the newest run whose maps are drawn, which
+  // right after a run lands is the one before it. Only asked when keeping to
+  // ready maps; otherwise the newest run stands.
+  function loadReady(pickRun){
+    var m=MODEL, r=run, free=pickRun&&$("readyonly").checked;
+    return fetch("/api/ready?model="+m+(free?"":"&run="+r)).then(function(x){return x.json();}).then(function(j){
       if(m!==MODEL||r!==run||!j.ready) return;
+      if(free&&j.run!==run){
+        run=j.run;
+        $("runpill").textContent="run "+j.run_label+" (newer run still drawing)";
+      }
       READY=j.ready; showReady();
     }).catch(function(){});
   }
@@ -705,7 +712,7 @@
       // ask what is drawn before showing anything, so the first map up is one
       // that is ready rather than one that has to be made
       READY={};
-      return loadReady().then(function(){ setField(field); });
+      return loadReady(true).then(function(){ setField(field); });
     });
   }
   $("model").addEventListener("change",function(e){

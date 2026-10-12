@@ -24,7 +24,7 @@ import traceback
 import urllib.error
 import urllib.request
 from html import escape
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, request, send_file, jsonify, Response, send_from_directory
 
@@ -165,13 +165,32 @@ def _map_args():
 
 @app.route("/api/ready")
 def ready():
-    """Which static maps of a run are already drawn (see hr.ready_maps)."""
+    """
+    Which static maps of a run are already drawn (see hr.ready_maps).
+
+    With no run given, answers for the best-stocked recent run rather than the
+    newest: a run counts as newest the moment it starts landing, well before
+    its maps are drawn, and a page that keeps to ready maps would open on
+    nothing. The newest run wins once it has half as many maps as the one
+    before it.
+    """
     try:
         model = _model()
-        run = _parse_run(request.args.get("run"), model)
+        asked = request.args.get("run")
+        run = _parse_run(asked, model)
     except ValueError as e:
         return jsonify(error=str(e)), 400
-    return jsonify(model=model, run=run.strftime("%Y%m%d%H"), ready=hr.ready_maps(model, run))
+    got = hr.ready_maps(model, run)
+    latest = run
+    if not asked:
+        count = lambda r: sum(len(h) for f in r.values() for h in f.values())
+        cycle = timedelta(hours=hr.MODELS[model]["cycle"])
+        older = [(run - cycle * k, hr.ready_maps(model, run - cycle * k)) for k in (1, 2)]
+        best = max(count(r) for _, r in older)
+        if count(got) < 0.5 * best:
+            run, got = next((d, r) for d, r in older if count(r) >= 0.5 * best)
+    return jsonify(model=model, run=run.strftime("%Y%m%d%H"), run_label=run.strftime("%Y-%m-%d %HZ"),
+                   latest_run=latest.strftime("%Y%m%d%H"), ready=got)
 
 
 @app.route("/api/map")
