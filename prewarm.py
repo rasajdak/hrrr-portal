@@ -158,8 +158,8 @@ def push(dest, key):
     Send the maps not yet sent to the web server, as a tar stream over ssh.
 
     The account at the other end can do exactly one thing: its key is tied to
-    deploy/mapsync-receive, which unpacks .png files into a staging folder and
-    moves them into the cache whole, so the site never serves half a file.
+    deploy/mapsync-receive, which unpacks .png files (and arrival-time grids)
+    into a staging folder and moves them into the cache whole, so the site never serves half a file.
     (rsync would be the obvious tool, but macOS ships openrsync and the
     restricted-rsync wrapper on the server refuses its handshake.)
     """
@@ -170,6 +170,17 @@ def push(dest, key):
     geo = os.path.join(hr.CACHE_DIR, "geo")
     if os.path.isdir(geo):
         have |= {"geo/" + n for n in os.listdir(geo) if n.startswith("loop_") and n.endswith(".png")}
+    # and each run's arrival times, the longest window worked out for it: with
+    # that grid the server draws any region, shape or shorter window at once,
+    # rather than fetching and decoding the run's frames again itself
+    longest = {}
+    for n in os.listdir(hr.CACHE_DIR):
+        if n.startswith("acc_arrnow") and n.endswith(".npz"):
+            have.add(n)
+        elif n.startswith("acc_arr") and n.endswith(".npz"):
+            stem = n.rsplit("_", 1)[0]
+            longest[stem] = max(longest.get(stem, ""), n)
+    have |= set(longest.values())
     sent = set(open(sent_path).read().split()) if os.path.exists(sent_path) else set()
     todo = sorted(have - sent)
     if not todo:
