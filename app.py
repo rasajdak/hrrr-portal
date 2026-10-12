@@ -6,6 +6,7 @@ Endpoints
   GET /api/config?model=      -> models, that model's fields and newest run, regions
   GET /api/overlay            -> rendered field PNG (query: model, field, run, fxx)
   GET /api/map                -> finished static map PNG (adds: region)
+  GET /api/ready?model=&run=  -> which static maps of that run are already drawn
   POST /api/save              -> keep one static map for good, under /saved/
   GET /saved                  -> the kept maps, newest first
   GET /share                  -> a page around one static map, for posting a link
@@ -160,6 +161,17 @@ def _map_args():
     run = _parse_run(request.args.get("run"), model)
     fxx = int(request.args.get("fxx", "0"))
     return model, field, run, fxx, region
+
+
+@app.route("/api/ready")
+def ready():
+    """Which static maps of a run are already drawn (see hr.ready_maps)."""
+    try:
+        model = _model()
+        run = _parse_run(request.args.get("run"), model)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(model=model, run=run.strftime("%Y%m%d%H"), ready=hr.ready_maps(model, run))
 
 
 @app.route("/api/map")

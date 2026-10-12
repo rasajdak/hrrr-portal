@@ -1074,6 +1074,24 @@ def render_map(field_key, run_dt, fxx, region="conus", model="hrrr"):
     return out_path
 
 
+def ready_maps(model, run_dt):
+    """
+    {field: {region: [hours]}} for the static maps of one run that are already
+    drawn, so the page can show what opens at once. One directory listing and a
+    hash per candidate; nothing is fetched or rendered.
+    """
+    have = set(os.listdir(CACHE_DIR))
+    m, run = MODELS[model], run_dt.strftime("%Y%m%d%H")
+    out = {}
+    for f in field_catalog(model):
+        for region in REGIONS:
+            hours = [h for h in range(f["min_fxx"], m["max_fxx"] + 1, m["step"])
+                     if os.path.basename(_cache_path("map", model, f["key"], run, "%03d" % h, region)) in have]
+            if hours:
+                out.setdefault(f["key"], {})[region] = hours
+    return out
+
+
 def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     import cartopy.feature as cfeature
 

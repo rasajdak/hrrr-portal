@@ -164,6 +164,7 @@ sudo systemctl disable --now hrrr-prewarm.timer   # turn it off
 | `GET /api/config?model=` | models, that model's fields and latest run, regions |
 | `GET /api/overlay?model=&field=&run=&fxx=` | rendered field PNG |
 | `GET /api/map?model=&field=&run=&fxx=&region=` | finished static map PNG (`dl=1` to download) |
+| `GET /api/ready?model=&run=` | which static maps of that run are already drawn: `{field: {region: [hours]}}` |
 | `POST /api/save?...` | copy that map to `saved/` under a readable name; returns its permanent URL |
 | `GET /saved` | gallery of kept maps (capped at 500; delete files from `saved/` to prune) |
 | `GET /share?...` | the static map on a page with link-preview tags |

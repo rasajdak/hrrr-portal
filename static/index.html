@@ -44,6 +44,12 @@
   /* the ticks live under the slider itself, so F0 and the last hour sit at its ends */
   #sliderwrap{flex:1;min-width:0;display:flex;flex-direction:column;padding-top:14px}
   #sliderwrap input[type=range]{flex:none;width:100%;margin:0}
+  /* one mark per forecast hour whose static map is already drawn */
+  #readybar{position:relative;height:5px;margin:5px 9px 0;display:none}
+  body.static #readybar{display:block}
+  #readybar i{position:absolute;top:0;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:var(--accent2)}
+  .check{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);font-weight:500;cursor:pointer;white-space:nowrap}
+  .check input{accent-color:var(--accent2);margin:0}
   #ticks{display:flex;justify-content:space-between;margin-top:7px;padding:0 4px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 
   #legend{position:absolute;right:14px;bottom:120px;z-index:900;background:rgba(19,27,38,.92);
@@ -135,6 +141,7 @@
 <div id="share">
   <div id="sharehead">
     <div class="group"><label>Region</label><select id="region"></select></div>
+    <label class="check" title="Step and play through only the hours that are already drawn. A dot marks a field, region or hour that is ready."><input type="checkbox" id="readyonly" /> Ready maps only <span id="readycount"></span></label>
     <span class="sp"></span>
     <button id="sharesave" title="Keep this map on the server at a link that never expires">Save to server</button>
     <a class="btn" href="/saved">Saved maps</a>
@@ -173,7 +180,7 @@
     <button class="icon" id="stepback" title="Step back">‹</button>
     <button class="icon primary" id="play" title="Play / pause">▶</button>
     <button class="icon" id="stepfwd" title="Step forward">›</button>
-    <div id="sliderwrap"><input type="range" id="slider" min="0" max="18" step="1" value="0" /><div id="ticks"></div></div>
+    <div id="sliderwrap"><input type="range" id="slider" min="0" max="18" step="1" value="0" /><div id="readybar"></div><div id="ticks"></div></div>
     <select id="speed" title="Animation speed">
       <option value="900">Slow</option><option value="600" selected>Normal</option><option value="350">Fast</option>
     </select>
@@ -326,6 +333,9 @@
     $("legimg").src="/api/legend?model="+MODEL+"&field="+k+"&rv="+CFG.render_rev;
     setTimelineEnabled(true);
     if(fxx<f.min_fxx) fxx=f.min_fxx;
+    showReady();
+    var hrs=onlyReady();              // land on an hour that is drawn, if keeping to those
+    if(hrs&&hrs.indexOf(fxx)<0) fxx=hrs.reduce(function(a,b){ return Math.abs(b-fxx)<Math.abs(a-fxx)?b:a; });
     prefetched=false;                 // new field -> new frames to warm
     draw();
     if(probeLatLng) loadSeries();     // re-probe the pinned point for this field
@@ -412,14 +422,27 @@
 
   // ---- timeline dispatch (HRRR forecast hours vs radar time frames) ----
   function tlSet(v){ if(radarMode) setRadarIdx(v); else setFxx(v); }
-  function tlStep(d){ if(radarMode) setRadarIdx(radarIdx+d); else setFxx(fxx+d*STEP); }
+  function tlStep(d){
+    if(radarMode){ setRadarIdx(radarIdx+d); return; }
+    var hrs=onlyReady();
+    if(hrs){                              // the next ready hour that way, if there is one
+      var pick=d>0?hrs.filter(function(h){return h>fxx;})[0]:hrs.filter(function(h){return h<fxx;}).pop();
+      if(pick!==undefined) setFxx(pick);
+      return;
+    }
+    setFxx(fxx+d*STEP);
+  }
   function tlNext(){ if(radarMode){ var n=radarIdx+1; if(n>=radarTimes.length)n=0; setRadarIdx(n); }
-                     else { var n=fxx+STEP; if(n>CFG.max_fxx)n=0; setFxx(n); } }
+                     else { var hrs=onlyReady();
+                            if(hrs){ var nx=hrs.filter(function(h){return h>fxx;})[0]; setFxx(nx===undefined?hrs[0]:nx); return; }
+                            var n=fxx+STEP; if(n>CFG.max_fxx)n=0; setFxx(n); } }
 
   function setFxx(v){
     if(activeIsTile) return;
     var f=CFG.fields.find(function(x){return x.key===field;});
     v=Math.round(v/STEP)*STEP;          // frames sit on the model's step
+    var hrs=onlyReady();
+    if(hrs) v=hrs.reduce(function(a,b){ return Math.abs(b-v)<Math.abs(a-v)?b:a; });
     fxx=Math.max(f.min_fxx||0,Math.min(CFG.max_fxx, v)); draw();
   }
 
@@ -540,7 +563,10 @@
     $("shareopen").href=url;
     // load off-screen and swap, so the last frame stays up until the next is ready
     var pre=new Image();
-    pre.onload=function(){ if(tok!==shareTok) return; img.src=url; img.classList.remove("wait"); msg.style.display="none"; shareBusy=false; };
+    pre.onload=function(){
+      noteReady(q);                       // whatever was just drawn is ready from now on
+      if(tok!==shareTok) return; img.src=url; img.classList.remove("wait"); msg.style.display="none"; shareBusy=false;
+    };
     pre.onerror=function(){
       if(tok!==shareTok) return; shareBusy=false;
       fetch(url).then(function(r){return r.json();}).then(function(j){
@@ -549,6 +575,47 @@
     };
     pre.src=url;
   }
+  // ---- what is already drawn ----
+  // READY[field][region] = [hours]. Asked of the server per model run, and
+  // added to here as maps are drawn in this session.
+  var READY={};
+  function readyHours(f,r){ var a=READY[f===undefined?field:f]; return (a&&a[r===undefined?REGION:r])||[]; }
+  function onlyReady(){              // the hours to keep to, or null when not restricting
+    if(MODE!=="static"||!$("readyonly").checked) return null;
+    var h=readyHours(); return h.length?h:null;
+  }
+  function loadReady(){
+    var m=MODEL, r=run;
+    return fetch("/api/ready?model="+m+"&run="+r).then(function(x){return x.json();}).then(function(j){
+      if(m!==MODEL||r!==run||!j.ready) return;
+      READY=j.ready; showReady();
+    }).catch(function(){});
+  }
+  function noteReady(q){
+    var p={}; q.split("&").forEach(function(kv){ var i=kv.indexOf("="); p[kv.slice(0,i)]=decodeURIComponent(kv.slice(i+1)); });
+    if(p.model!==MODEL||p.run!==run) return;
+    var a=(READY[p.field]=READY[p.field]||{}), h=(a[p.region]=a[p.region]||[]), n=+p.fxx;
+    if(h.indexOf(n)<0){ h.push(n); h.sort(function(x,y){return x-y;}); showReady(); }
+  }
+  function showReady(){
+    // a dot before every field with a map ready for this region, and every
+    // region with a map ready for this field
+    Array.prototype.forEach.call($("field").options,function(o){
+      if(!o.dataset.label) o.dataset.label=o.textContent;
+      o.textContent=(readyHours(o.value).length?"● ":"")+o.dataset.label;
+    });
+    Array.prototype.forEach.call($("region").options,function(o){
+      if(!o.dataset.label) o.dataset.label=o.textContent;
+      o.textContent=(readyHours(field,o.value).length?"● ":"")+o.dataset.label;
+    });
+    var hrs=readyHours(), bar=$("readybar"); bar.innerHTML="";
+    hrs.forEach(function(h){ var i=document.createElement("i"); i.style.left=(100*h/CFG.max_fxx)+"%"; i.title="F"+h+" is drawn"; bar.appendChild(i); });
+    var total=Math.floor((CFG.max_fxx-(curField()?curField().min_fxx||0:0))/STEP)+1;
+    $("readycount").textContent=tileField(field)?"":"("+hrs.length+" of "+total+" hours)";
+  }
+  $("readyonly").addEventListener("change",function(){ if(onlyReady()) setFxx(fxx); });
+  setInterval(function(){ if(CFG&&MODE==="static") loadReady(); },120000);   // the server keeps drawing
+
   function fitShare(){              // the bar wraps on a narrow screen
     $("share").style.top=$("bar").offsetHeight+"px";
     $("share").style.bottom=($("timeline").offsetHeight+22)+"px";
@@ -571,7 +638,8 @@
   $("region").addEventListener("change",function(e){
     REGION=e.target.value;
     try{ localStorage.setItem("region",REGION); }catch(err){}
-    drawShare();
+    showReady();
+    if(onlyReady()) setFxx(fxx); else drawShare();
   });
   $("sharesave").addEventListener("click",function(){
     var b=$("sharesave"); b.disabled=true; b.textContent="Saving…";
@@ -629,7 +697,9 @@
       if(!keep) field=cfg.fields.some(function(f){return f.key==="refc";})?"refc":"t2m";
       sel.value=field;
       fxx=Math.min(cfg.max_fxx, Math.round(fxx/STEP)*STEP);
+      READY={};
       setField(field);
+      loadReady();
     });
   }
   $("model").addEventListener("change",function(e){
