@@ -141,7 +141,7 @@
 <div id="share">
   <div id="sharehead">
     <div class="group"><label>Region</label><select id="region"></select></div>
-    <label class="check" title="Step and play through only the hours that are already drawn. A dot marks a field, region or hour that is ready."><input type="checkbox" id="readyonly" /> Ready maps only <span id="readycount"></span></label>
+    <label class="check" title="Step and play through only the hours that are already drawn. A dot marks a field, region or hour that is ready."><input type="checkbox" id="readyonly" checked /> Ready maps only <span id="readycount"></span></label>
     <span class="sp"></span>
     <button id="sharesave" title="Keep this map on the server at a link that never expires">Save to server</button>
     <a class="btn" href="/saved">Saved maps</a>
@@ -613,7 +613,12 @@
     var total=Math.floor((CFG.max_fxx-(curField()?curField().min_fxx||0:0))/STEP)+1;
     $("readycount").textContent=tileField(field)?"":"("+hrs.length+" of "+total+" hours)";
   }
-  $("readyonly").addEventListener("change",function(){ if(onlyReady()) setFxx(fxx); });
+  // on unless the visitor turned it off
+  try{ if(localStorage.getItem("readyonly")==="0") $("readyonly").checked=false; }catch(e){}
+  $("readyonly").addEventListener("change",function(e){
+    try{ localStorage.setItem("readyonly",e.target.checked?"1":"0"); }catch(err){}
+    if(onlyReady()) setFxx(fxx);
+  });
   setInterval(function(){ if(CFG&&MODE==="static") loadReady(); },120000);   // the server keeps drawing
 
   function fitShare(){              // the bar wraps on a narrow screen
@@ -697,9 +702,10 @@
       if(!keep) field=cfg.fields.some(function(f){return f.key==="refc";})?"refc":"t2m";
       sel.value=field;
       fxx=Math.min(cfg.max_fxx, Math.round(fxx/STEP)*STEP);
+      // ask what is drawn before showing anything, so the first map up is one
+      // that is ready rather than one that has to be made
       READY={};
-      setField(field);
-      loadReady();
+      return loadReady().then(function(){ setField(field); });
     });
   }
   $("model").addEventListener("change",function(e){
