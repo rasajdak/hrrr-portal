@@ -123,8 +123,12 @@ def shade(key, proj, x0, x1, y0, y1, w, h, cache_dir):
 
 
 def overlay(s, dark, light):
-    """RGBA image for imshow: black where shaded, white where lit, by strength."""
-    rgba = np.zeros(s.shape + (4,), dtype="float32")
-    rgba[..., :3] = (s > 0)[..., None]
-    rgba[..., 3] = np.where(s < 0, -s * dark, s * light)
+    """
+    RGBA image for imshow: black where shaded, white where lit, by strength.
+    Bytes, not floats: matplotlib spends most of an image's draw time converting
+    a float array, and this one is drawn twice on every map.
+    """
+    rgba = np.zeros(s.shape + (4,), dtype="uint8")
+    rgba[..., :3] = np.where(s > 0, 255, 0)[..., None]
+    rgba[..., 3] = np.clip(np.where(s < 0, -s * dark, s * light) * 255.0, 0, 255)
     return rgba

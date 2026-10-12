@@ -1318,7 +1318,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         shade = relief.shade(region, proj, x0, x1, y0, y1, int(round(box.width)),
                              int(round(box.height)), CACHE_DIR)
         ax.imshow(relief.overlay(shade, 0.50, 0.75), extent=(x0, x1, y0, y1), origin="upper",
-                  interpolation="bilinear", zorder=1.5)
+                  interpolation="nearest", zorder=1.5)
     except Exception:
         shade = None
     sx, sy, sv = gx[::stride, ::stride], gy[::stride, ::stride], vals[::stride, ::stride]
@@ -1360,7 +1360,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
                       cmap=cmap, norm=norm, shading=_shading(f), zorder=2, rasterized=True)
     if shade is not None:
         ax.imshow(relief.overlay(shade, 0.34, 0.26), extent=(x0, x1, y0, y1), origin="upper",
-                  interpolation="bilinear", zorder=2.5)
+                  interpolation="nearest", zorder=2.5)
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
     line = INK
