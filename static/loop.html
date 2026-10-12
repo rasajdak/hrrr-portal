@@ -43,7 +43,7 @@
     <div class="group"><label for="speed">Speed</label>
       <select id="speed"><option value="0.5">Slow</option><option value="1" selected>Normal</option><option value="2">Fast</option></select></div>
     <span class="sp"></span>
-    <button id="rec" disabled title="Plays the loop once and saves it as a video file">Save as video</button>
+    <button id="rec" title="Records the whole loop, start to finish, and downloads it as a video. Nothing else to press.">Save as video</button>
     <a class="btn" href="/">Static maps</a>
   </div>
   <canvas id="stage" width="1920" height="1080"></canvas>
@@ -60,8 +60,9 @@
   "use strict";
   var $=function(id){ return document.getElementById(id); };
   // Landscape: a title strip over the map. Vertical: the map fills the whole
-  // reel, with one block at the very top (a large day and time, then the
-  // legend). The lower third is left alone:
+  // reel, with one block at the very top (the name, a large day and time, the
+  // legend) and a band of matching weight at the foot. The lower third of the
+  // map is left alone:
   // the caption sits there, so nothing that matters is put in it.
   var W=1920, H=1080, HEAD=75, MW=1920, MH=1005, TALL=false;
   try{ TALL=localStorage.getItem("loopshape")==="tall"; }catch(e){}
@@ -80,7 +81,7 @@
   var gl=glc.getContext("webgl2",{premultipliedAlpha:true,alpha:true,antialias:false});
 
   var META=null, baseImg=null, topImg=null, tex=[], flow=[], loaded=0, token=0;
-  var head=0, playing=true, last=0, hold=0, recorder=null;
+  var head=0, playing=true, last=0, hold=0, recorder=null, wantVideo=false, savedNote="";
   var MODEL="hrrr", REGION="wny";
   try{ MODEL=localStorage.getItem("loopmodel")||MODEL; REGION=localStorage.getItem("region")||REGION; }catch(e){}
   if(REGION==="conus"&&!localStorage.getItem("loopregion")) REGION="wny";
@@ -147,7 +148,7 @@
     var my=++token;
     stopRecording(true);
     tex.concat(flow).forEach(function(t){ if(t) gl.deleteTexture(t); }); tex=[]; flow=[]; loaded=0; head=0; META=null; baseImg=topImg=null;
-    $("rec").disabled=true; $("note").textContent="loading…"; draw();
+    wantVideo=false; savedNote=""; $("rec").textContent="Save as video"; $("note").textContent="loading…"; draw();
     var RK=encodeURIComponent(regionKey());
     fetch("/api/loop?model="+MODEL+"&region="+RK).then(function(r){ return r.json(); }).then(function(m){
       if(my!==token) return;
@@ -169,7 +170,8 @@
         image("/api/loop/frame?model="+MODEL+"&run="+m.run+"&region="+RK+"&m="+m.minutes[k]).then(function(img){
           if(my!==token) return;
           tex[k]=makeTex(img); loaded++;
-          if(loaded===m.minutes.length) $("rec").disabled=false;
+          // asked for a video before the frames were in: start it now that they are
+          if(loaded===m.minutes.length&&wantVideo){ wantVideo=false; startRecording(); }
         }).catch(function(){}).then(function(){
           // the motion from the frame before to this one: both now exist on the server
           if(k>0&&my===token) image("/api/loop/flow?model="+MODEL+"&run="+m.run+"&region="+RK+"&m="+m.minutes[k-1])
@@ -215,8 +217,21 @@
       // the top edge so no strip of map is stranded above it; the type starts
       // lower, clear of the phone's own status bar and the app's small icons.
       // Nothing else is laid over the map.
-      var ty=120, th=168, lh=64;
+      var ty=120, th=168, lh=64, fh=120;
       ctx.fillStyle="rgba(15,23,35,.94)"; ctx.fillRect(0,0,W,ty+th+lh);
+      // the space above the time names the picture, so it is not a blank slab
+      ctx.textBaseline="middle"; ctx.textAlign="left"; ctx.fillStyle="#b9c8da";
+      ctx.font='600 40px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("FUTURECAST RADAR", 24, ty-44);
+      ctx.textAlign="right"; ctx.font='500 34px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText(META.name, W-24, ty-44);
+      // and a band of the same weight closes the frame at the bottom
+      ctx.fillStyle="rgba(15,23,35,.94)"; ctx.fillRect(0,H-fh,W,fh);
+      ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,H-fh,W,6);
+      ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font='600 40px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("ryansajdak.com", 24, H-fh/2+4);
+      ctx.textAlign="right"; ctx.fillStyle="#b9c8da"; ctx.font='500 30px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("Data: "+META.credit, W-24, H-fh/2+4);
       ctx.textBaseline="middle"; ctx.textAlign="left";
       var big='600 132px "Barlow Condensed", Barlow, sans-serif';
       ctx.font=big; var wDay=ctx.measureText(c.day).width;
@@ -240,11 +255,6 @@
       // where in the loop this is, along the foot of the block
       ctx.fillStyle="#243244"; ctx.fillRect(0,ly+lh,W,8);
       ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,ly+lh,W*at,8);
-      // model and source, small, low in the clear part of the map
-      ctx.textAlign="right"; ctx.font='500 24px Barlow, sans-serif'; ctx.lineWidth=5;
-      ctx.strokeStyle="rgba(255,255,255,.9)"; ctx.fillStyle="#222";
-      var cr=META.name+"  ·  Data: "+META.credit;
-      ctx.strokeText(cr, W-24, 1230); ctx.fillText(cr, W-24, 1230);
       return;
     }
     // header
@@ -305,8 +315,12 @@
     }
     if(META){
       $("scrub").max=Math.max(1,(META.minutes.length-1)*10); if(document.activeElement!==$("scrub")) $("scrub").value=Math.round(head*10);
+      var total=META.minutes.length-1;
+      if(recorder) $("rec").textContent="Recording "+Math.round(100*Math.min(head,total)/total)+"% (cancel)";
+      else if(wantVideo) $("rec").textContent="Video starts when loaded (cancel)";
       $("note").textContent=loaded<META.minutes.length ? "loading weather "+loaded+" of "+META.minutes.length
-        : (recorder?"recording… ":"")+"run "+META.run.slice(8)+"Z, "+META.minutes.length+" times";
+        : recorder ? "recording the whole loop, it saves itself at the end"
+        : savedNote || ("run "+META.run.slice(8)+"Z, "+META.minutes.length+" times");
     }
     draw();
   }
@@ -317,24 +331,40 @@
     var r=recorder; recorder=null; r._discard=discard; try{ r.stop(); }catch(e){}
     $("rec").textContent="Save as video";
   }
-  $("rec").addEventListener("click",function(){
-    if(recorder){ stopRecording(true); return; }
-    if(!window.MediaRecorder){ $("note").textContent="this browser cannot record video"; return; }
+  // One press records the whole loop: back to the start, through to the end at
+  // normal speed, a short rest on the last frame, then the file downloads by
+  // itself. Pressing again while it runs cancels it.
+  function startRecording(){
+    if(!window.MediaRecorder){ savedNote="this browser cannot record video"; return; }
     var types=["video/mp4;codecs=avc1.640028","video/mp4","video/webm;codecs=vp9","video/webm"], type=types.filter(function(t){ return MediaRecorder.isTypeSupported(t); })[0];
     var chunks=[], rec=new MediaRecorder(stage.captureStream(30),{mimeType:type,videoBitsPerSecond:14000000});
     rec.ondataavailable=function(e){ if(e.data.size) chunks.push(e.data); };
     rec.onstop=function(){
       if(rec._discard) return;
-      var a=document.createElement("a"); a.href=URL.createObjectURL(new Blob(chunks,{type:type}));
-      a.download="futurecast_"+MODEL+"_"+REGION+(TALL?"_vertical":"")+"_"+META.run+(type.indexOf("mp4")>=0?".mp4":".webm");
+      var name="futurecast_"+MODEL+"_"+REGION+(TALL?"_vertical":"")+"_"+META.run+(type.indexOf("mp4")>=0?".mp4":".webm");
+      var a=document.createElement("a"); a.href=URL.createObjectURL(new Blob(chunks,{type:type})); a.download=name;
       document.body.appendChild(a); a.click(); a.remove();
+      savedNote="saved "+name;
     };
-    head=0; hold=0; playing=true; $("play").textContent="Pause";
-    recorder=rec; rec.start(); $("rec").textContent="Stop recording";
+    head=0; hold=0; playing=true; savedNote=""; $("play").textContent="Pause";
+    recorder=rec; rec.start();
+  }
+  $("rec").addEventListener("click",function(){
+    if(recorder){ stopRecording(true); return; }
+    if(wantVideo){ wantVideo=false; $("rec").textContent="Save as video"; return; }
+    if(!META||loaded<META.minutes.length){ wantVideo=true; $("rec").textContent="Video starts when loaded (cancel)"; return; }
+    startRecording();
+  });
+  // a hidden tab stops drawing, which would leave a recording running forever
+  document.addEventListener("visibilitychange",function(){
+    if(document.hidden&&recorder){ stopRecording(true); savedNote="recording cancelled: keep this tab in front while it records"; }
   });
 
   // ---- controls ----
-  $("play").addEventListener("click",function(){ playing=!playing; $("play").textContent=playing?"Pause":"Play"; });
+  $("play").addEventListener("click",function(){
+    if(recorder) stopRecording(true);                 // pausing would stall the recording; cancel it instead
+    playing=!playing; $("play").textContent=playing?"Pause":"Play";
+  });
   $("scrub").addEventListener("input",function(e){ head=Math.min(Math.max(0,usable()-1), e.target.value/10); hold=0; });
   $("model").addEventListener("change",function(e){ MODEL=e.target.value; try{ localStorage.setItem("loopmodel",MODEL); }catch(x){} load(); });
   $("region").addEventListener("change",function(e){ REGION=e.target.value; try{ localStorage.setItem("loopregion",REGION); }catch(x){} load(); });
