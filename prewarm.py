@@ -14,25 +14,31 @@ models x fields x regions x frames, a few seconds each.
 
 import fcntl
 import os
+import shutil
 import sys
 import time
 
 import hrrr_render as hr
 
 # model -> (fields, regions). Frames are all of the model's. This set is about
-# 8,100 maps a day, a little over 5 hours of the one core at 2.3 s a map. HRRR
-# is the expensive line, because it comes round every hour: one more HRRR field
-# across these four regions is 1,824 maps a day.
+# 17,900 maps a day: 10,900 of them HRRR, because it comes round every hour (one
+# HRRR field across these four regions is 1,824 maps a day). At 1.2 to 2.3 s a
+# map that is 6 to 11 hours of the one core, which is about what it can give.
+# Left out to fit: per-frame snowfall, HRRR freezing rain, GFS radar.
 AREAS = ["wny", "newyork", "northeast", "conus"]
 PLAN = [
-    ("hrrr",  ["refc", "apcp_tot", "asnow"],   AREAS),
-    ("nam",   ["apcp_tot", "snow10"],          AREAS),
-    ("gfs",   ["apcp_tot", "snow10"],          AREAS),
-    ("ecmwf", ["apcp_tot", "snow10"],          AREAS),
+    ("hrrr",  ["refc", "apcp_tot", "asnow", "ptype", "t2m", "gust"],    AREAS),
+    ("nam",   ["refc", "apcp_tot", "snow10", "ptype", "t2m", "gust"],   AREAS),
+    ("gfs",   ["apcp_tot", "snow10", "ptype", "t2m", "gust"],           AREAS),
+    ("ecmwf", ["apcp_tot", "snow10", "ptype", "t2m", "gust"],           AREAS),
 ]
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
-KEEP_PNG = 48 * 3600     # cached frames older than this are deleted
+# Cached frames older than this are deleted. The set above writes roughly 20 GB
+# a day (a temperature map is over 2 MB), and the longest any run stays current
+# is ECMWF's 12 hours.
+KEEP_PNG = 18 * 3600
+MIN_FREE_GB = 6          # below this, prune only and draw nothing
 
 
 def jobs():
@@ -66,6 +72,11 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return                                   # the last pass is still going
+    prune()
+    free = shutil.disk_usage(hr.CACHE_DIR).free / 1e9
+    if free < MIN_FREE_GB:
+        print("only %.1f GB free: drawing nothing this pass" % free)
+        return
     start, drawn, missing = time.time(), 0, set()
     for model, run, field, fxx, region in jobs():
         if time.time() - start > BUDGET:

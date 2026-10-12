@@ -148,7 +148,7 @@ Then browse to the droplet's IP (or domain). Logs: `journalctl -u hrrr-portal -f
 every frame) as soon as a model posts a new run, so the page opens them
 instantly. A systemd timer runs one pass every 10 minutes at low priority; a
 pass skips maps that exist, stops after 8 minutes, and deletes cached frames
-older than 48 hours. Edit `PLAN` to change the set; it is CPU on a one-core box.
+older than 18 hours (and draws nothing if the disk is under 6 GB free). Edit `PLAN` to change the set; it is CPU on a one-core box.
 
 ```bash
 sudo cp deploy/hrrr-prewarm.service deploy/hrrr-prewarm.timer /etc/systemd/system/
