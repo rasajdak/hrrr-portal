@@ -73,8 +73,7 @@ def groups():
         for field, fxx in frames:
             if fxx < hr.spec(field, model)["min_fxx"]:
                 continue
-            todo = [r for r in AREAS if not os.path.exists(hr._cache_path(
-                "map", model, field, run.strftime("%Y%m%d%H"), "%03d" % fxx, r))]
+            todo = [r for r in AREAS if not os.path.exists(hr.map_path(model, field, run, fxx, r))]
             yield model, run, field, fxx, todo
 
 

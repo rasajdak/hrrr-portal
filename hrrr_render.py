@@ -1022,6 +1022,35 @@ CITIES = [
 # Laid out as a 16 x 10 inch sheet and saved at 150 dpi: 2400 x 1500 pixels,
 # enough that the type and county lines stay sharp when a phone zooms in.
 MAP_W, MAP_H, MAP_DPI = 2400, 1500, 150
+# The look of the sheet. Bump when it changes; every static map is then redrawn
+# (overlay PNGs for the live map are keyed without it and stay).
+MAP_REV = "s3"
+WATER, LAND, INK = "#c9d8e4", "#efece5", "#2a2f36"
+
+# Named on regional maps, where a lake is half the picture.
+WATERS = [("Lake Erie", 42.15, -81.25), ("Lake Ontario", 43.63, -77.80), ("Lake Huron", 44.75, -82.45),
+          ("Georgian Bay", 45.30, -80.85), ("Lake Michigan", 43.90, -87.05), ("Lake Superior", 47.60, -87.60),
+          ("Atlantic Ocean", 40.2, -70.2), ("Gulf of Maine", 43.2, -68.6)]
+_roads = {}             # major -> [(bounds, geometry)]
+
+
+def _road_shapes(w, e, s, n, major_only):
+    """Highways touching a lat/lon box, from Natural Earth. No file, no roads."""
+    if not _roads:
+        try:
+            from cartopy.io import shapereader
+            path = shapereader.natural_earth(resolution="10m", category="cultural", name="roads")
+            big, rest = [], []
+            for r in shapereader.Reader(path).records():
+                kind = r.attributes.get("type") or ""
+                if r.geometry is None or kind not in ("Major Highway", "Secondary Highway"):
+                    continue
+                (big if kind == "Major Highway" else rest).append(r.geometry.bounds + (r.geometry,))
+            _roads[True], _roads[False] = big, big + rest
+        except Exception:
+            return []
+    return [g for x0, y0, x1, y1, g in _roads[bool(major_only)]
+            if x1 > w and x0 < e and y1 > s and y0 < n]
 _MAP_AX = [0.0, 0.072, 1.0, 0.838]          # the map itself, as a figure fraction
 
 
@@ -1122,13 +1151,18 @@ def _upsample(a, k):
             + top[:, x0 + 1] * (1 - fy) * fx + bot[:, x0 + 1] * fy * fx)
 
 
+def map_path(model, field_key, run_dt, fxx, region):
+    """Where a static map lives in the cache, drawn or not."""
+    return _cache_path("map", MAP_REV, model, field_key, run_dt.strftime("%Y%m%d%H"),
+                       "%03d" % fxx, region)
+
+
 def render_map(field_key, run_dt, fxx, region="conus", model="hrrr"):
     """Path to a cached static map PNG, drawing it if need be."""
     if region not in REGIONS:
         raise ValueError("unknown region %r" % region)
     spec(field_key, model)
-    out_path = _cache_path("map", model, field_key, run_dt.strftime("%Y%m%d%H"),
-                           "%03d" % fxx, region)
+    out_path = map_path(model, field_key, run_dt, fxx, region)
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         return out_path
     f, data, lat, lon = _field(field_key, model, run_dt, fxx)
@@ -1143,12 +1177,12 @@ def ready_maps(model, run_dt):
     hash per candidate; nothing is fetched or rendered.
     """
     have = set(os.listdir(CACHE_DIR))
-    m, run = MODELS[model], run_dt.strftime("%Y%m%d%H")
+    m = MODELS[model]
     out = {}
     for f in field_catalog(model):
         for region in REGIONS:
             hours = [h for h in range(f["min_fxx"], m["max_fxx"] + 1, m["step"])
-                     if os.path.basename(_cache_path("map", model, f["key"], run, "%03d" % h, region)) in have]
+                     if os.path.basename(map_path(model, f["key"], run_dt, h, region)) in have]
             if hours:
                 out.setdefault(f["key"], {})[region] = hours
     return out
@@ -1197,13 +1231,24 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     ax = fig.add_axes(_MAP_AX, projection=proj)
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
-    ax.set_facecolor("#dbe6ee")                       # open water
+    ax.set_facecolor(WATER)                           # open water
 
     res = "10m" if (e - w) < 14 else "50m"
     ax.add_feature(cfeature.NaturalEarthFeature("physical", "land", res),
-                   facecolor="#f3f1ec", edgecolor="none", zorder=1)
+                   facecolor=LAND, edgecolor="none", zorder=1)
     ax.add_feature(cfeature.NaturalEarthFeature("physical", "lakes", res),
-                   facecolor="#dbe6ee", edgecolor="none", zorder=1)
+                   facecolor=WATER, edgecolor="none", zorder=1)
+    # Shaded terrain, firmly on the bare land here and again, faintly, over the
+    # weather further down. A map without it still draws.
+    try:
+        import relief
+        box = ax.get_window_extent()
+        shade = relief.shade(region, proj, x0, x1, y0, y1, int(round(box.width)),
+                             int(round(box.height)), CACHE_DIR)
+        ax.imshow(relief.overlay(shade, 0.50, 0.75), extent=(x0, x1, y0, y1), origin="upper",
+                  interpolation="bilinear", zorder=1.5)
+    except Exception:
+        shade = None
     sx, sy, sv = gx[::stride, ::stride], gy[::stride, ::stride], vals[::stride, ::stride]
     # Smoothing is sized in pixels of the finished sheet, not in grid cells, so a
     # county-scale map and a national one come out equally soft: a Gaussian of
@@ -1241,7 +1286,19 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
             sv = _smooth(sv, max(1, passes // 2))
         ax.pcolormesh(sx, sy, np.ma.masked_invalid(sv),
                       cmap=cmap, norm=norm, shading=_shading(f), zorder=2, rasterized=True)
-    line = "#2a2f36"
+    if shade is not None:
+        ax.imshow(relief.overlay(shade, 0.34, 0.26), extent=(x0, x1, y0, y1), origin="upper",
+                  interpolation="bilinear", zorder=2.5)
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    line = INK
+    regional = (e - w) < 22
+    # highways: the lines people actually navigate by, under the borders
+    # (secondary ones too, once the map is close enough to have room for them)
+    close = (e - w) < 10
+    ax.add_geometries(_road_shapes(w - 4, e + 4, s - 3, n + 3, major_only=not close), crs=pc,
+                      facecolor="none", edgecolor="#5a4632", linewidth=0.75 if close else 0.5,
+                      alpha=0.5 if close else 0.4, zorder=2.8)
     ax.add_feature(cfeature.NaturalEarthFeature("physical", "lakes", res),
                    facecolor="none", edgecolor=line, linewidth=0.5, zorder=3)
     ax.add_feature(cfeature.NaturalEarthFeature("physical", "coastline", res),
@@ -1251,20 +1308,21 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         facecolor="none", edgecolor=line, linewidth=0.55, zorder=3)
     ax.add_feature(cfeature.NaturalEarthFeature("cultural", "admin_0_boundary_lines_land", res),
                    facecolor="none", edgecolor=line, linewidth=0.9, zorder=3)
-    if (e - w) < 22:
+    if regional:
         ax.add_geometries(_county_shapes(w - 4, e + 4, s - 3, n + 3), crs=pc,
-                          facecolor="none", edgecolor=line, linewidth=0.3, alpha=0.4, zorder=3)
+                          facecolor="none", edgecolor=line, linewidth=0.3, alpha=0.32, zorder=3)
     for sp in ax.spines.values():
         sp.set_edgecolor("#2a2f36")
         sp.set_linewidth(0.8)
 
-    # ---- city values ----
     halo = [pe.withStroke(linewidth=2.6, foreground="white")]
+
+    # ---- city values ----
     cxy = proj.transform_points(pc, np.array([c[2] for c in CITIES]), np.array([c[1] for c in CITIES]))
     kept = []
     gap = (x1 - x0) * 0.085                       # a label block is about this wide
     mx, my = (x1 - x0) * 0.03, (y1 - y0) * 0.04
-    for (name, _, _), (cx, cy, _) in zip(CITIES, cxy):
+    for rank, ((name, _, _), (cx, cy, _)) in enumerate(zip(CITIES, cxy)):
         if not (x0 + mx < cx < x1 - mx and y0 + my < cy < y1 - my):
             continue
         if any(abs(cx - kx) < gap and abs(cy - ky) < gap * 0.6 for kx, ky in kept):
@@ -1274,7 +1332,8 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
         kept.append((cx, cy))
         i = np.unravel_index(int(np.argmin((gx - cx) ** 2 + (gy - cy) ** 2)), gx.shape)
         v = float(vals[i])
-        ax.plot(cx, cy, "o", ms=3.2, color="#111", mec="white", mew=0.6, zorder=5)
+        major = rank < 16                             # the first cities listed lead
+        ax.plot(cx, cy, "o", ms=4.2 if major else 3.0, color="#111", mec="white", mew=0.8, zorder=5)
         # no number where the field is blank there: under the bottom of a banded
         # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
         blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
@@ -1283,7 +1342,18 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
             ax.text(cx, cy + (y1 - y0) * 0.012, _fmt_value(v, f), ha="center", va="bottom",
                     fontsize=14.5, fontweight="bold", color="#111", path_effects=halo, zorder=6)
         ax.text(cx, cy - (y1 - y0) * 0.012, name, ha="center", va="top",
-                fontsize=9.5, fontweight="medium", color="#222", path_effects=halo, zorder=6)
+                fontsize=11 if major else 9, fontweight="semibold" if major else "medium",
+                color="#111" if major else "#2b2b2b", path_effects=halo, zorder=6)
+
+    # ---- water names (regional maps), wherever no city label already sits ----
+    if regional:
+        wxy = proj.transform_points(pc, np.array([c[2] for c in WATERS]), np.array([c[1] for c in WATERS]))
+        for (name, _, _), (cx, cy, _) in zip(WATERS, wxy):
+            clear = not any(abs(cx - kx) < gap * 1.3 and abs(cy - ky) < gap * 0.6 for kx, ky in kept)
+            if clear and x0 + (x1 - x0) * 0.06 < cx < x1 - (x1 - x0) * 0.06 and y0 + (y1 - y0) * 0.05 < cy < y1 - (y1 - y0) * 0.05:
+                ax.text(cx, cy, name.upper(), ha="center", va="center", fontsize=9.5, fontweight="medium",
+                        color="#4f7391", alpha=0.9, zorder=4,
+                        path_effects=[pe.withStroke(linewidth=2.2, foreground="white", alpha=0.7)])
 
     # ---- title block ----
     m = MODELS[model]
