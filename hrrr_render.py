@@ -784,33 +784,11 @@ ARRIVAL_DBZ = 20.0       # echo at the run's first moment that counts as "alread
 ARRIVAL_NOW = -1.0       # what such a place carries instead of an hour
 
 
-def _arrival(model, run_dt, fxx):
-    """
-    Hours after the run began at which the precipitation fallen so far first
-    becomes measurable, NaN where it has not by `fxx`, and ARRIVAL_NOW where it
-    was already falling as the run began. A frame's precipitation covers the
-    time since the frame before, so the answer is the start of the frame that
-    tips it over: "from about 3 PM" rather than "by 4". HRRR is read from its
-    15-minute files where the run has them, which puts its times to the quarter
-    hour. Kept on disk frame by frame, as _accumulate keeps its totals, so the
-    next hour costs only its own downloads.
-    """
+def _arrival_frames(model, run_dt, fxx, f, step, url, find, memo):
+    """The first-measurable hour through `fxx`, from the frames on disk and the ones still to fetch."""
     from concurrent.futures import ThreadPoolExecutor
-    f = spec("apcp", model)
-    step = MODELS[model]["step"] * 60                  # minutes between frames
-    url = lambda m: _grib_url(model, "sfc", run_dt, m // 60)
-    find = lambda m: f["search"].format(f=m // 60, p=(m - step) // 60)
-    if model == "hrrr" and _exists(_index_url(_grib_url("hrrr", "subh", run_dt, fxx))):
-        step = 15
-        url = lambda m: _grib_url("hrrr", "subh", run_dt, int(math.ceil(m / 60.0)))
-        find = lambda m: ":APCP:surface:%d-%d min acc" % (m - 15, m)
-    stamp = "%s_%s_%s_%d" % (RENDER_REV, model, run_dt.strftime("%Y%m%d%H"), step)
-
-    def memo(m):
-        return os.path.join(CACHE_DIR, "acc_arr%s_%05d.npz" % (stamp, m))
-
     have, first, total = 0, None, None
-    for m in range(fxx * 60, 0, -step):
+    for m in range(MODELS[model]["max_fxx"] * 60, 0, -step):
         if os.path.exists(memo(m)):
             try:
                 z = np.load(memo(m))
@@ -818,6 +796,12 @@ def _arrival(model, run_dt, fxx):
                 break
             except Exception:
                 pass
+    if have >= fxx * 60:
+        # a longer window is already worked out: this one is the part of it
+        # that had begun by then, and costs nothing
+        first = np.where(first * 60.0 <= fxx * 60 - step, first, np.nan).astype("float32")
+        _, lat, lon = _one(model, url(fxx * 60), find(fxx * 60))
+        return first, lat, lon
     todo = list(range(have + step, fxx * 60 + 1, step))
     # ECMWF posts running totals, so a frame's own amount needs the one before
     need = ([have] if f.get("diff") and have else []) + todo
@@ -845,6 +829,43 @@ def _arrival(model, run_dt, fxx):
         os.replace(tmp, memo(m))
     if lat is None:
         _, lat, lon = _one(model, url(fxx * 60), find(fxx * 60))
+    return first, lat, lon
+
+
+def _arrival(model, run_dt, fxx):
+    """
+    Hours after the run began at which the precipitation fallen so far first
+    becomes measurable, NaN where it has not by `fxx`, and ARRIVAL_NOW where it
+    was already falling as the run began. A frame's precipitation covers the
+    time since the frame before, so the answer is the start of the frame that
+    tips it over: "from about 3 PM" rather than "by 4". HRRR is read from its
+    15-minute files where the run has them, which puts its times to the quarter
+    hour. Kept on disk frame by frame, as _accumulate keeps its totals, so the
+    next hour costs only its own downloads.
+    """
+    f = spec("apcp", model)
+    step = MODELS[model]["step"] * 60                  # minutes between frames
+    url = lambda m: _grib_url(model, "sfc", run_dt, m // 60)
+    find = lambda m: f["search"].format(f=m // 60, p=(m - step) // 60)
+    if model == "hrrr" and _exists(_index_url(_grib_url("hrrr", "subh", run_dt, fxx))):
+        step = 15
+        url = lambda m: _grib_url("hrrr", "subh", run_dt, int(math.ceil(m / 60.0)))
+        find = lambda m: ":APCP:surface:%d-%d min acc" % (m - 15, m)
+    stamp = "%s_%s_%s_%d" % (RENDER_REV, model, run_dt.strftime("%Y%m%d%H"), step)
+
+    def memo(m):
+        return os.path.join(CACHE_DIR, "acc_arr%s_%05d.npz" % (stamp, m))
+
+    # One drawing at a time per run, across threads and worker processes: a
+    # page that asks for several hours at once would otherwise have each of them
+    # download and decode the same frames.
+    import fcntl
+    lock = open(os.path.join(CACHE_DIR, "acc_arr%s.lock" % stamp), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        first, lat, lon = _arrival_frames(model, run_dt, fxx, f, step, url, find, memo)
+    finally:
+        lock.close()
 
     # Already falling at the start: an echo overhead as the run began, and
     # measurable within the hour (or the first frame, if frames are longer).
