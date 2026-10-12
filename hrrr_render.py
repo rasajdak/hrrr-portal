@@ -777,58 +777,91 @@ def _radar_ptype(model, run_dt, fxx):
     return np.where(np.isfinite(dbz) & (dbz >= RP_LEVELS[0]), code, np.nan).astype("float32"), lat, lon
 
 
-ARRIVAL_IN = 0.01        # inches in one frame that count as "it has started"
+ARRIVAL_IN = 0.01        # inches since the run began that count as "it has started"
+ARRIVAL_DBZ = 20.0       # echo at the run's first moment that counts as "already falling"
+ARRIVAL_NOW = -1.0       # what such a place carries instead of an hour
 
 
 def _arrival(model, run_dt, fxx):
     """
-    Hours after the run began at which precipitation first becomes measurable,
-    NaN where none falls by `fxx`. A frame's precipitation covers the hours
-    since the frame before, so the answer is the start of the first wet frame:
-    "from about 3 PM" rather than "by 4". Kept on disk frame by frame, as
-    _accumulate keeps its totals, so the next hour costs one download.
+    Hours after the run began at which the precipitation fallen so far first
+    becomes measurable, NaN where it has not by `fxx`, and ARRIVAL_NOW where it
+    was already falling as the run began. A frame's precipitation covers the
+    time since the frame before, so the answer is the start of the frame that
+    tips it over: "from about 3 PM" rather than "by 4". HRRR is read from its
+    15-minute files where the run has them, which puts its times to the quarter
+    hour. Kept on disk frame by frame, as _accumulate keeps its totals, so the
+    next hour costs only its own downloads.
     """
     from concurrent.futures import ThreadPoolExecutor
     f = spec("apcp", model)
-    step = MODELS[model]["step"]
-    url = lambda h: _grib_url(model, "sfc", run_dt, h)
-    find = lambda h: f["search"].format(f=h, p=h - step)
+    step = MODELS[model]["step"] * 60                  # minutes between frames
+    url = lambda m: _grib_url(model, "sfc", run_dt, m // 60)
+    find = lambda m: f["search"].format(f=m // 60, p=(m - step) // 60)
+    if model == "hrrr" and _exists(_index_url(_grib_url("hrrr", "subh", run_dt, fxx))):
+        step = 15
+        url = lambda m: _grib_url("hrrr", "subh", run_dt, int(math.ceil(m / 60.0)))
+        find = lambda m: ":APCP:surface:%d-%d min acc" % (m - 15, m)
+    stamp = "%s_%s_%s_%d" % (RENDER_REV, model, run_dt.strftime("%Y%m%d%H"), step)
 
-    def memo(h):
-        return os.path.join(CACHE_DIR, "acc_arr%s_%s_%s_%03d.npz" % (
-            RENDER_REV, model, run_dt.strftime("%Y%m%d%H"), h))
+    def memo(m):
+        return os.path.join(CACHE_DIR, "acc_arr%s_%05d.npz" % (stamp, m))
 
-    have, first = 0, None
-    for h in range(fxx, 0, -step):
-        if os.path.exists(memo(h)):
+    have, first, total = 0, None, None
+    for m in range(fxx * 60, 0, -step):
+        if os.path.exists(memo(m)):
             try:
-                first, have = np.load(memo(h))["a"].astype("float32"), h
+                z = np.load(memo(m))
+                first, total, have = z["a"].astype("float32"), z["t"].astype("float32"), m
                 break
             except Exception:
                 pass
-    todo = list(range(have + step, fxx + 1, step))
+    todo = list(range(have + step, fxx * 60 + 1, step))
     # ECMWF posts running totals, so a frame's own amount needs the one before
     need = ([have] if f.get("diff") and have else []) + todo
     with ThreadPoolExecutor(6) as ex:
-        raws = dict(zip(need, ex.map(lambda h: _http(url(h), rng=_locate(url(h), find(h))), need)))
+        raws = dict(zip(need, ex.map(lambda m: _http(url(m), rng=_locate(url(m), find(m))), need)))
     lat = lon = prev = None
-    for h in need:
-        arrs, lat, lon = _decode(model, raws[h])
+    for m in need:
+        arrs, lat, lon = _decode(model, raws.pop(m))
         amount = np.nan_to_num(arrs[0])
         if f.get("diff"):
-            amount, prev = (amount if prev is None else amount - prev), amount
-            if h not in todo:
+            amount, prev = (amount if prev is None else np.maximum(amount - prev, 0)), amount
+            if m not in todo:
                 continue
         if first is None:
             first = np.full(amount.shape, np.nan, dtype="float32")
-        wet = f["conv"](amount) >= ARRIVAL_IN
-        first = np.where(np.isnan(first) & wet, float(h - step), first).astype("float32")
-        tmp = part_name(memo(h))
+            total = np.zeros(amount.shape, dtype="float32")
+        total = total + f["conv"](amount)
+        first = np.where(np.isnan(first) & (total >= ARRIVAL_IN), (m - step) / 60.0, first).astype("float32")
+        if m % 60 and m != todo[-1]:
+            continue                                   # quarter hours are not worth the disk
+        tmp = part_name(memo(m))
         with open(tmp, "wb") as fh:
-            np.savez_compressed(fh, a=first.astype("float16"))
-        os.replace(tmp, memo(h))
+            # past the threshold the total no longer matters: capped, it packs small
+            np.savez_compressed(fh, a=first.astype("float16"), t=np.minimum(total, 1.0).astype("float16"))
+        os.replace(tmp, memo(m))
     if lat is None:
-        _, lat, lon = _one(model, url(fxx), find(fxx))
+        _, lat, lon = _one(model, url(fxx * 60), find(fxx * 60))
+
+    # Already falling at the start: an echo overhead as the run began, and
+    # measurable within the hour (or the first frame, if frames are longer).
+    now_path = os.path.join(CACHE_DIR, "acc_arrnow%s.npz" % stamp)
+    try:
+        falling = np.load(now_path)["a"]
+    except Exception:
+        try:
+            if model == "ecmwf":
+                falling = _one(model, url(0), ":sfc:tprate:")[0][0] * 3600.0 >= 0.25
+            else:
+                falling = _one(model, url(0), ":REFC:")[0][0] >= ARRIVAL_DBZ
+        except Exception:
+            falling = np.zeros(first.shape, dtype=bool)     # the model does not say
+        tmp = part_name(now_path)
+        with open(tmp, "wb") as fh:
+            np.savez_compressed(fh, a=falling)
+        os.replace(tmp, now_path)
+    first = np.where(falling & (first < max(60, step) / 60.0), ARRIVAL_NOW, first).astype("float32")
     _prune()
     return first, lat, lon
 
@@ -1086,6 +1119,8 @@ def _draw(f, data, lat, lon, out_path, stride):
     # rasterize (the expensive part), smoothed back over the gaps by the shading.
     if f.get("typed"):
         data = _rp_index(data % 100, data // 100, f["typed"]["levels"])
+    if f.get("arrival"):
+        data = np.maximum(data, 0)                    # "already falling" takes the first colour
     d = data[::stride, ::stride]
     la = lat[::stride, ::stride]
     lo = lon[::stride, ::stride]
@@ -1265,10 +1300,10 @@ def _clock(dt, tz):
 
 
 def _short_clock(dt, tz, day=False):
-    """'4 PM', or 'Tue 4 PM' when the day is wanted too."""
+    """'4 PM' or '4:15 PM', and 'Tue 4 PM' when the day is wanted too."""
     from zoneinfo import ZoneInfo
     local = dt.astimezone(ZoneInfo(tz))
-    return local.strftime("%a %-I %p" if day else "%-I %p")
+    return local.strftime(("%a " if day else "") + ("%-I:%M %p" if local.minute else "%-I %p"))
 
 
 def _when(run_dt, fxx, tz):
@@ -1692,7 +1727,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         k = int(min(12, max(1, round(900.0 / max(sv.shape)))))
         wet = _upsample(_smooth(np.isfinite(sv).astype("float32"), passes), k)
         if np.isfinite(sv).any():
-            hour = _upsample(_smooth(_spread(sv, passes + 3), passes), k)
+            hour = _upsample(_smooth(_spread(np.maximum(sv, 0), passes + 3), passes), k)
             hour = np.where(wet >= 0.5, hour, np.nan)
             ax.contourf(_upsample(sx, k), _upsample(sy, k), np.ma.masked_invalid(hour),
                         levels=levels, colors=colors, extend=extend, antialiased=False, zorder=2)
@@ -1759,11 +1794,12 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
         ax.plot(cx, cy, "o", ms=(4.2 if major else 3.0) * ts, color="#111", mec="white", mew=0.8, zorder=5)
         # no number where the field is blank there: under the bottom of a banded
         # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
-        blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"])
+        blank = (f.get("mask_under") or bands) and v < (bands[0][0] if bands else f["vmin"]) and not arrival
         shown = math.isfinite(v) and not blank and not f.get("cats") and (not typed or typed.get("values"))
         if shown:
-            said = (_short_clock(run_dt + timedelta(hours=v), reg["tz"], days) if arrival
-                    else _fmt_value(v, f))
+            said = _fmt_value(v, f)
+            if arrival:
+                said = "Now" if v < 0 else _short_clock(run_dt + timedelta(hours=v), reg["tz"], days)
             ax.text(cx, cy + (y1 - y0) * 0.012 * off, said, ha="center", va="bottom",
                     fontsize=14.5 * ts, fontweight="bold", color="#111", path_effects=halo, zorder=6)
         ax.text(cx, cy - (y1 - y0) * 0.012 * off, name, ha="center", va="top",
