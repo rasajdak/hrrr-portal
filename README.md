@@ -157,6 +157,29 @@ journalctl -u hrrr-prewarm -n 20            # "drew N maps in S s" per pass
 sudo systemctl disable --now hrrr-prewarm.timer   # turn it off
 ```
 
+### A second machine as the drawing machine
+The droplet has one core. Any Mac can do the drawing instead and send the
+finished maps up, leaving the droplet to serve them:
+
+```bash
+git clone https://github.com/rasajdak/hrrr-portal.git && cd hrrr-portal
+bash deploy/mac/setup.sh        # installs uv if missing, makes a key, adds a launchd job
+```
+
+The script ends by printing a public key. Add it on the droplet, one line per
+machine, to `/home/mapsync/.ssh/authorized_keys`:
+
+```
+command="/usr/local/bin/mapsync-receive",restrict ssh-ed25519 AAAA... name
+```
+
+`mapsync` is an account that can do one thing: that key runs
+`deploy/mapsync-receive`, which unpacks `.png` files from a tar stream into a
+staging folder and moves them into `cache/` whole. The Mac must be on the same
+commit as the droplet, since cache names include the render revision. Once it
+is keeping up, the droplet's own timer can be left on as a fallback (it skips
+what exists) or switched to `prewarm.py --prune-only`.
+
 ## Endpoints
 | route | purpose |
 |-------|---------|

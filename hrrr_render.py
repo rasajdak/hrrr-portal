@@ -643,7 +643,7 @@ def _accumulate(f, model, run_dt, fxx):
             if len(raws) > 1:
                 part = part * np.nan_to_num(_decode(model, raws[1])[0][0])
             total = part if total is None else total + part
-            tmp = memo(h) + ".part"
+            tmp = "%s.%d.part" % (memo(h), os.getpid())   # two drawers may share a total
             with open(tmp, "wb") as fh:
                 np.savez_compressed(fh, a=total.astype("float16"))
             os.replace(tmp, memo(h))
@@ -867,7 +867,7 @@ def _draw(f, data, lat, lon, out_path, stride):
     ax.pcolormesh(lo, la, field, transform=ccrs.PlateCarree(),
                   cmap=cmap, norm=norm, shading=_shading(f))
 
-    tmp = out_path + ".part"            # two workers may render the same frame
+    tmp = "%s.%d.part" % (out_path, os.getpid())            # two workers may render the same frame
     fig.savefig(tmp, format="png", transparent=True, dpi=dpi,
                 pad_inches=0, bbox_inches=None)
     plt.close(fig)
@@ -1233,7 +1233,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     fig.text(0.989, 0.014, "Data: %s" % credit(model), fontsize=9.5,
              color="#666", va="bottom", ha="right")
 
-    tmp = out_path + ".part"
+    tmp = "%s.%d.part" % (out_path, os.getpid())
     fig.savefig(tmp, format="png", dpi=MAP_DPI, facecolor="white")
     plt.close(fig)
     os.replace(tmp, out_path)

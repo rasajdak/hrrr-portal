@@ -1,0 +1,19 @@
+#!/bin/sh
+# /usr/local/bin/mapsync-receive — the only thing the mapsync account can run.
+#
+# A drawing machine (see prewarm.py --push) pipes a tar of finished map PNGs in
+# over ssh. They are unpacked into a staging folder and moved into the cache
+# one whole file at a time. In ~mapsync/.ssh/authorized_keys each key reads:
+#   command="/usr/local/bin/mapsync-receive",restrict ssh-ed25519 AAAA... name
+set -eu
+CACHE=/opt/hrrr-portal/cache
+d=$(mktemp -d "$CACHE/.in.XXXXXX")
+trap 'rm -rf "$d"' EXIT
+# only .png members, never an owner or mode from the sender; GNU tar already
+# refuses absolute paths and ".." members
+tar -xf - -C "$d" --no-same-owner --no-same-permissions --wildcards '*.png'
+for f in "$d"/*.png; do
+    [ -f "$f" ] || continue
+    chmod 644 "$f"
+    mv "$f" "$CACHE/"
+done
