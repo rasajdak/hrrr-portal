@@ -218,6 +218,8 @@ def _arrival_scale(model, fxx):
     step = MODELS[model]["step"]
     band = next((b for b in (1, 2, 3, 6, 12, 24, 48) if b >= step and fxx <= 10 * b), 48)
     levels = list(range(0, max(fxx, band), band))
+    if len(levels) < 2:
+        levels = [0, band / 2.0]                  # a window one frame long still needs two edges
     cm = plt.get_cmap("Spectral")
     colors = [to_hex(cm(i / max(len(levels) - 1.0, 1.0))) for i in range(len(levels))]
     return dict(levels=levels, colors=colors, vmin=0, vmax=max(fxx, band))
