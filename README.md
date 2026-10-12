@@ -143,6 +143,19 @@ sudo certbot --nginx -d your.domain
 
 Then browse to the droplet's IP (or domain). Logs: `journalctl -u hrrr-portal -f`.
 
+## The animated loop
+`/loop` is a futurecast: radar by precipitation type, in motion over the same
+terrain base as the static maps. The server does not draw it. `loop.py` hands
+the browser three kinds of ingredient in one region's map frame: a base picture
+(land, water, relief), a transparent label sheet (roads, borders, names), and
+for each forecast time a small data PNG whose red, green and blue channels are
+the echo strength where rain, mix and snow own the spot. A WebGL shader blends
+two neighbouring times and colours the result, sixty times a second, and the
+whole stage is a 1920 x 1080 canvas that the Save as video button records to
+MP4. HRRR runs on its 15-minute sub-hourly fields (73 frames over 18 hours);
+NAM and GFS are hourly, ECMWF 3-hourly. `prewarm.py` draws the frames ahead for
+`LOOP_AREAS`.
+
 ### Maps drawn ahead of time
 `prewarm.py` draws the static maps listed in its `PLAN` (per model: totals at a
 few quoted hours, moving fields at a coarse step, for the regions in `AREAS`) as soon as a model posts a new run, so the page opens them
@@ -188,6 +201,10 @@ what exists) or switched to `prewarm.py --prune-only`.
 | `GET /api/overlay?model=&field=&run=&fxx=` | rendered field PNG |
 | `GET /api/map?model=&field=&run=&fxx=&region=` | finished static map PNG (`dl=1` to download) |
 | `GET /api/ready?model=&run=` | which static maps of that run are already drawn: `{field: {region: [hours]}}` |
+| `GET /loop` | the animated futurecast page |
+| `GET /api/loop?model=&region=` | its run, frame times and palette |
+| `GET /api/loop/frame?model=&run=&m=&region=` | one forecast time as a data PNG |
+| `GET /api/loop/base?region=&layer=` | a region's base or label layer |
 | `POST /api/save?...` | copy that map to `saved/` under a readable name; returns its permanent URL |
 | `GET /saved` | gallery of kept maps (capped at 500; delete files from `saved/` to prune) |
 | `GET /share?...` | the static map on a page with link-preview tags |

@@ -9,6 +9,10 @@ Endpoints
   GET /api/ready?model=&run=  -> which static maps of that run are already drawn
   POST /api/save              -> keep one static map for good, under /saved/
   GET /saved                  -> the kept maps, newest first
+  GET /loop                   -> the animated futurecast page
+  GET /api/loop               -> its run, frame times and layers (query: model, region)
+  GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m)
+  GET /api/loop/base          -> a region's base or label layer (query: region, layer)
   GET /share                  -> a page around one static map, for posting a link
   GET /api/legend?field=...   -> colorbar PNG for a field
   GET /api/panel?lat=&lon=    -> every field a desk panel shows, in one object
@@ -30,6 +34,7 @@ from flask import Flask, request, send_file, jsonify, Response, send_from_direct
 
 import hrrr_render as hr
 import hrrr_panel
+import loop
 
 # WAQI air-quality tile token — read from the environment so it never lives in
 # the repo or the client. Set on the server (systemd Environment=WAQI_TOKEN=...).
@@ -161,6 +166,50 @@ def _map_args():
     run = _parse_run(request.args.get("run"), model)
     fxx = int(request.args.get("fxx", "0"))
     return model, field, run, fxx, region
+
+
+@app.route("/loop")
+def loop_page():
+    return send_from_directory(app.static_folder, "loop.html")
+
+
+@app.route("/api/loop")
+def loop_meta():
+    try:
+        return jsonify(loop.meta(request.args.get("model", "hrrr"), request.args.get("region", "wny")))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+
+
+@app.route("/api/loop/frame")
+def loop_frame():
+    try:
+        model = _model()
+        if model not in loop.LOOPS:
+            raise ValueError("no loop for %r" % model)
+        region = request.args.get("region", "wny")
+        if region not in hr.REGIONS:
+            raise ValueError("unknown region %r" % region)
+        run = _parse_run(request.args.get("run"), model) if request.args.get("run") else loop.latest_run(model)
+        path = loop.frame_png(model, run, int(request.args.get("m", "0")), region)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        app.logger.error("loop frame failed: %s\n%s", e, traceback.format_exc())
+        return jsonify(error="frame failed: %s" % e), 502
+    return send_file(path, mimetype="image/png", max_age=86400)
+
+
+@app.route("/api/loop/base")
+def loop_base():
+    try:
+        path = loop.base_png(request.args.get("region", "wny"), request.args.get("layer", "base"))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        app.logger.error("loop base failed: %s\n%s", e, traceback.format_exc())
+        return jsonify(error="layer failed: %s" % e), 502
+    return send_file(path, mimetype="image/png", max_age=86400)
 
 
 @app.route("/api/ready")

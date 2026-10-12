@@ -31,6 +31,7 @@ import sys
 import time
 
 import hrrr_render as hr
+import loop
 
 # What is drawn ahead, for these regions. Not every frame: drawing all of them
 # was about 17,900 maps a day, and at the 3.4 s a map the droplet managed with
@@ -51,6 +52,10 @@ PLAN = {
     "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG,
                   loops=["refc_ptype", "ptype", "t2m", "gust"], every=6, to=120),
 }
+
+# The animated loop's data frames, drawn ahead for these regions. A frame's
+# cost is its six downloads, shared by every region, so regions are cheap here.
+LOOP_AREAS = ["wny", "newyork", "northeast"]
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
 # Cached frames older than this are deleted. The set above writes roughly 20 GB
@@ -75,12 +80,26 @@ def groups():
                 continue
             todo = [r for r in AREAS if not os.path.exists(hr.map_path(model, field, run, fxx, r))]
             yield model, run, field, fxx, todo
+        # then that model's loop, one group per forecast time
+        lrun = loop.latest_run(model)
+        for m in loop.minutes(model):
+            todo = [r for r in LOOP_AREAS if not os.path.exists(loop.frame_path(model, lrun, m, r))]
+            yield model, lrun, "loop", m, todo
 
 
 def draw(group):
     """Draw one group. Returns (maps drawn, the (model, hour) if not posted yet)."""
     model, run, field, fxx, regions = group
     drawn = 0
+    if field == "loop":
+        try:
+            loop.frames(model, run, fxx, regions)
+            return len(regions), None
+        except RuntimeError as e:
+            return 0, ((model, "loop") if "not posted" in str(e) else None)
+        except Exception as e:
+            print("skip %s loop %d min: %s" % (model, fxx, e), flush=True)
+            return 0, None
     for region in regions:
         try:
             hr.render_map(field, run, fxx, region, model)
@@ -203,7 +222,10 @@ def _arg(name, default=None):
 
 if __name__ == "__main__":
     if "--list" in sys.argv:
-        print(sum(len(AREAS) for _ in groups()), "maps per full set of runs")
+        n = [0, 0]
+        for g in groups():
+            n[g[2] == "loop"] += len(LOOP_AREAS if g[2] == "loop" else AREAS)
+        print(n[0], "maps and", n[1], "loop frames per full set of runs")
     else:
         main(workers=int(_arg("--workers", "1")), dest=_arg("--push"), key=_arg("--key"),
              prune_only="--prune-only" in sys.argv, budget=int(_arg("--budget", BUDGET)))

@@ -1258,17 +1258,19 @@ def _basemap(region, proj, x0, x1, y0, y1):
     return base
 
 
-def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
-
-    reg = REGIONS[region]
-    w, e, s, n = reg["box"]
+def frame(region):
+    """
+    (proj, x0, x1, y0, y1): the Lambert conformal fitted to a region and the
+    limits of its map frame. The box is grown on one axis to the frame's shape,
+    so the map fills it edge to edge instead of floating in a margin. The
+    animated loop draws into this same frame, which is why its layers line up
+    with the static maps'.
+    """
+    w, e, s, n = REGIONS[region]["box"]
     pc = ccrs.PlateCarree()
     proj = ccrs.LambertConformal(
         central_longitude=(w + e) / 2, central_latitude=(s + n) / 2,
         standard_parallels=(s + (n - s) / 6, n - (n - s) / 6))
-
-    # The box in map coordinates, then grown on one axis to the frame's shape so
-    # the map fills it edge to edge instead of floating in a margin.
     t = np.linspace(0, 1, 40)
     edge_lon = np.concatenate([w + (e - w) * t, w + (e - w) * t, np.full(40, w), np.full(40, e)])
     edge_lat = np.concatenate([np.full(40, s), np.full(40, n), s + (n - s) * t, s + (n - s) * t])
@@ -1281,6 +1283,55 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     else:
         grow = (x1 - x0) / want - (y1 - y0)
         y0, y1 = y0 - grow / 2, y1 + grow / 2
+    return proj, x0, x1, y0, y1
+
+
+def city_labels(region, limit=22):
+    """
+    [(name, x, y, major)] for the cities a region's map has room for, in map
+    coordinates: taken in priority order, dropping any that would collide.
+    """
+    proj, x0, x1, y0, y1 = frame(region)
+    cxy = proj.transform_points(ccrs.PlateCarree(), np.array([c[2] for c in CITIES]),
+                                np.array([c[1] for c in CITIES]))
+    kept = []
+    gap = (x1 - x0) * 0.085                       # a label block is about this wide
+    mx, my = (x1 - x0) * 0.03, (y1 - y0) * 0.04
+    for rank, ((name, _, _), (cx, cy, _)) in enumerate(zip(CITIES, cxy)):
+        if not (x0 + mx < cx < x1 - mx and y0 + my < cy < y1 - my):
+            continue
+        if any(abs(cx - k[1]) < gap and abs(cy - k[2]) < gap * 0.6 for k in kept):
+            continue
+        if len(kept) >= limit:
+            break
+        kept.append((name, cx, cy, rank < 16))    # the first cities listed lead
+    return kept
+
+
+def water_labels(region, cities):
+    """[(name, x, y)] for the big waters in a regional frame, clear of the cities."""
+    w, e, _, _ = REGIONS[region]["box"]
+    if (e - w) >= 22:
+        return []
+    proj, x0, x1, y0, y1 = frame(region)
+    gap = (x1 - x0) * 0.085
+    wxy = proj.transform_points(ccrs.PlateCarree(), np.array([c[2] for c in WATERS]),
+                                np.array([c[1] for c in WATERS]))
+    out = []
+    for (name, _, _), (cx, cy, _) in zip(WATERS, wxy):
+        clear = not any(abs(cx - k[1]) < gap * 1.3 and abs(cy - k[2]) < gap * 0.6 for k in cities)
+        if clear and x0 + (x1 - x0) * 0.06 < cx < x1 - (x1 - x0) * 0.06 \
+                and y0 + (y1 - y0) * 0.05 < cy < y1 - (y1 - y0) * 0.05:
+            out.append((name, cx, cy))
+    return out
+
+
+def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
+
+    reg = REGIONS[region]
+    w, e, s, n = reg["box"]
+    pc = ccrs.PlateCarree()
+    proj, x0, x1, y0, y1 = frame(region)
 
     # Project the grid ourselves and hand matplotlib plain x/y: quicker than
     # letting cartopy transform the mesh, and nothing to wrap at this scale.
@@ -1382,21 +1433,10 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     halo = [pe.withStroke(linewidth=2.6, foreground="white")]
 
     # ---- city values ----
-    cxy = proj.transform_points(pc, np.array([c[2] for c in CITIES]), np.array([c[1] for c in CITIES]))
-    kept = []
-    gap = (x1 - x0) * 0.085                       # a label block is about this wide
-    mx, my = (x1 - x0) * 0.03, (y1 - y0) * 0.04
-    for rank, ((name, _, _), (cx, cy, _)) in enumerate(zip(CITIES, cxy)):
-        if not (x0 + mx < cx < x1 - mx and y0 + my < cy < y1 - my):
-            continue
-        if any(abs(cx - kx) < gap and abs(cy - ky) < gap * 0.6 for kx, ky in kept):
-            continue
-        if len(kept) >= 22:
-            break
-        kept.append((cx, cy))
+    cities = city_labels(region)
+    for name, cx, cy, major in cities:
         i = np.unravel_index(int(np.argmin((gx - cx) ** 2 + (gy - cy) ** 2)), gx.shape)
         v = float(vals[i])
-        major = rank < 16                             # the first cities listed lead
         ax.plot(cx, cy, "o", ms=4.2 if major else 3.0, color="#111", mec="white", mew=0.8, zorder=5)
         # no number where the field is blank there: under the bottom of a banded
         # or masked scale (no echo, no snow) a "-10" or "0.00" is only clutter
@@ -1410,14 +1450,10 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
                 color="#111" if major else "#2b2b2b", path_effects=halo, zorder=6)
 
     # ---- water names (regional maps), wherever no city label already sits ----
-    if regional:
-        wxy = proj.transform_points(pc, np.array([c[2] for c in WATERS]), np.array([c[1] for c in WATERS]))
-        for (name, _, _), (cx, cy, _) in zip(WATERS, wxy):
-            clear = not any(abs(cx - kx) < gap * 1.3 and abs(cy - ky) < gap * 0.6 for kx, ky in kept)
-            if clear and x0 + (x1 - x0) * 0.06 < cx < x1 - (x1 - x0) * 0.06 and y0 + (y1 - y0) * 0.05 < cy < y1 - (y1 - y0) * 0.05:
-                ax.text(cx, cy, name.upper(), ha="center", va="center", fontsize=9.5, fontweight="medium",
-                        color="#4f7391", alpha=0.9, zorder=4,
-                        path_effects=[pe.withStroke(linewidth=2.2, foreground="white", alpha=0.7)])
+    for name, cx, cy in water_labels(region, cities):
+        ax.text(cx, cy, name.upper(), ha="center", va="center", fontsize=9.5, fontweight="medium",
+                color="#4f7391", alpha=0.9, zorder=4,
+                path_effects=[pe.withStroke(linewidth=2.2, foreground="white", alpha=0.7)])
 
     # ---- title block ----
     m = MODELS[model]

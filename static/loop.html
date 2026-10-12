@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Futurecast loop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600&display=swap" />
+<style>
+  :root{ --bg:#0b1017; --panel:#131b26; --panel2:#1b2634; --line:#243244; --ink:#e8eef6; --muted:#8ea3bd; --accent:#4ea3ff; --accent2:#33d69f; }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:Barlow,"Helvetica Neue",Helvetica,Arial,sans-serif}
+  #wrap{max-width:1500px;margin:0 auto;padding:12px 14px 20px}
+  #bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  #bar h1{font-family:"Barlow Condensed",Barlow,sans-serif;font-size:24px;font-weight:600;margin:0 8px 0 0;white-space:nowrap}
+  .group{display:flex;align-items:center;gap:7px}
+  .group>label{font-size:13px;color:var(--muted);font-weight:500}
+  select,button,a.btn{font:inherit;font-size:13.5px;font-weight:500;color:var(--ink);background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer;text-decoration:none}
+  select:hover,button:hover,a.btn:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#04121f;font-weight:600;min-width:70px}
+  button:disabled{opacity:.5;cursor:default}
+  .sp{flex:1}
+  /* the stage is a 1920 x 1080 picture; the page only scales it */
+  #stage{display:block;width:100%;height:auto;border-radius:10px;background:#fff;aspect-ratio:16/9}
+  #under{display:flex;align-items:center;gap:12px;margin-top:10px}
+  #scrub{flex:1;accent-color:var(--accent)}
+  #note{font-size:13px;color:var(--muted);min-width:210px;text-align:right;font-variant-numeric:tabular-nums}
+  #help{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.45}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <h1>Futurecast loop</h1>
+    <div class="group"><label for="model">Model</label><select id="model"></select></div>
+    <div class="group"><label for="region">Region</label><select id="region"></select></div>
+    <div class="group"><label for="speed">Speed</label>
+      <select id="speed"><option value="0.5">Slow</option><option value="1" selected>Normal</option><option value="2">Fast</option></select></div>
+    <span class="sp"></span>
+    <button id="rec" disabled title="Plays the loop once and saves it as a video file">Save as video</button>
+    <a class="btn" href="/">Static maps</a>
+  </div>
+  <canvas id="stage" width="1920" height="1080"></canvas>
+  <div id="under">
+    <button id="play" class="primary">Pause</button>
+    <input type="range" id="scrub" min="0" max="1000" value="0" step="1" />
+    <span id="note">loading…</span>
+  </div>
+  <div id="help">Simulated radar from the model, coloured by what is falling: green rain, pink wintry mix, blue snow. The picture blends between forecast times, so the weather moves between them. Space plays and pauses.</div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $=function(id){ return document.getElementById(id); };
+  var W=1920, H=1080, HEAD=75, MW=1920, MH=1005;      // header strip + map area
+
+  var stage=$("stage"), ctx=stage.getContext("2d");
+  // The weather is drawn on its own WebGL canvas and laid between the base and
+  // the labels on the stage, so the stage is one flat picture that can be
+  // recorded as it is.
+  var glc=document.createElement("canvas"); glc.width=MW; glc.height=MH;
+  var gl=glc.getContext("webgl2",{premultipliedAlpha:true,alpha:true,antialias:false});
+
+  var META=null, baseImg=null, topImg=null, tex=[], loaded=0, token=0;
+  var head=0, playing=true, last=0, hold=0, recorder=null;
+  var MODEL="hrrr", REGION="wny";
+  try{ MODEL=localStorage.getItem("loopmodel")||MODEL; REGION=localStorage.getItem("region")||REGION; }catch(e){}
+  if(REGION==="conus"&&!localStorage.getItem("loopregion")) REGION="wny";
+  try{ REGION=localStorage.getItem("loopregion")||REGION; }catch(e){}
+
+  // ---- shader: two forecast times in, one blended, coloured picture out ----
+  var prog=null, palTex=null, U={};
+  function shader(type,src){ var s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  function initGL(){
+    var vs="#version 300 es\nin vec2 p; out vec2 uv; void main(){ uv=vec2(p.x*.5+.5, .5-p.y*.5); gl_Position=vec4(p,0.,1.); }";
+    var fs=[
+      "#version 300 es","precision highp float;",
+      "uniform sampler2D A, B, PAL; uniform float t; in vec2 uv; out vec4 o;",
+      // one colour family: six stops across 5..55 dBZ, flat steps with soft joins
+      "vec3 ramp(int g, float d){",
+      "  float x=clamp((d-5.)/10., 0., 4.999); int i=int(floor(x)); float f=smoothstep(.30,.70,fract(x));",
+      "  return mix(texelFetch(PAL, ivec2(g*6+i,0), 0).rgb, texelFetch(PAL, ivec2(g*6+i+1,0), 0).rgb, f); }",
+      "void main(){",
+      "  vec3 v=mix(texture(A,uv).rgb, texture(B,uv).rgb, t)*75.;",   // rain, mix, snow, in dBZ
+      "  float m=max(v.r, max(v.g, v.b));",
+      "  if(m<3.){ o=vec4(0.); return; }",
+      // whichever type is strongest owns the pixel; near a tie the colours blend
+      "  vec3 w=pow(v/m, vec3(6.)); w/=(w.r+w.g+w.b);",
+      "  vec3 c=w.r*ramp(0,m)+w.g*ramp(1,m)+w.b*ramp(2,m);",
+      "  float a=smoothstep(4.,9.,m)*.90;",
+      "  o=vec4(c*a, a); }"].join("\n");
+    prog=gl.createProgram(); gl.attachShader(prog,shader(gl.VERTEX_SHADER,vs)); gl.attachShader(prog,shader(gl.FRAGMENT_SHADER,fs));
+    gl.linkProgram(prog); gl.useProgram(prog);
+    var buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
+    var loc=gl.getAttribLocation(prog,"p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+    ["A","B","PAL","t"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
+    gl.uniform1i(U.A,0); gl.uniform1i(U.B,1); gl.uniform1i(U.PAL,2);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  }
+  function setPalette(hex){
+    var px=new Uint8Array(hex.length*4);
+    hex.forEach(function(h,i){ px[i*4]=parseInt(h.slice(1,3),16); px[i*4+1]=parseInt(h.slice(3,5),16); px[i*4+2]=parseInt(h.slice(5,7),16); px[i*4+3]=255; });
+    palTex=gl.createTexture(); gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,palTex);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,hex.length,1,0,gl.RGBA,gl.UNSIGNED_BYTE,px);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  }
+  function makeTex(img){
+    var t=gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,t);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,img);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    return t;
+  }
+
+  // ---- loading ----
+  function image(url){ return new Promise(function(ok,no){ var i=new Image(); i.onload=function(){ok(i);}; i.onerror=function(){no(new Error(url));}; i.src=url; }); }
+  function usable(){ var n=0; while(n<tex.length&&tex[n]) n++; return n; }     // frames ready from the start
+  function load(){
+    var my=++token;
+    stopRecording(true);
+    tex.forEach(function(t){ if(t) gl.deleteTexture(t); }); tex=[]; loaded=0; head=0; META=null; baseImg=topImg=null;
+    $("rec").disabled=true; $("note").textContent="loading…"; draw();
+    fetch("/api/loop?model="+MODEL+"&region="+REGION).then(function(r){ return r.json(); }).then(function(m){
+      if(my!==token) return;
+      if(m.error) throw new Error(m.error);
+      META=m; tex=new Array(m.minutes.length).fill(null);
+      if(!$("model").options.length){
+        m.models.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("model").appendChild(o); });
+        m.regions.forEach(function(x){ var o=document.createElement("option"); o.value=x.key; o.textContent=x.label; $("region").appendChild(o); });
+      }
+      $("model").value=MODEL; $("region").value=REGION;
+      setPalette(m.colors);
+      image("/api/loop/base?region="+REGION+"&layer=base").then(function(i){ if(my===token) baseImg=i; });
+      image("/api/loop/base?region="+REGION+"&layer=top").then(function(i){ if(my===token) topImg=i; });
+      // frames in order, four at a time: the loop can start before they are all in
+      var next=0;
+      function one(){
+        if(my!==token||next>=m.minutes.length) return;
+        var k=next++;
+        image("/api/loop/frame?model="+MODEL+"&run="+m.run+"&region="+REGION+"&m="+m.minutes[k]).then(function(img){
+          if(my!==token) return;
+          tex[k]=makeTex(img); loaded++;
+          if(loaded===m.minutes.length) $("rec").disabled=false;
+        }).catch(function(){}).then(one);
+      }
+      for(var i=0;i<4;i++) one();
+    }).catch(function(e){ if(my===token) $("note").textContent=String(e.message||e); });
+  }
+
+  // ---- drawing ----
+  function rounded(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+  function clock(min){
+    var d=new Date(Date.parse(META.run_iso)+min*60000);
+    var p=new Intl.DateTimeFormat("en-US",{timeZone:META.tz,weekday:"short",hour:"numeric",minute:"2-digit",timeZoneName:"short"}).formatToParts(d), o={};
+    p.forEach(function(x){ o[x.type]=x.value; });
+    return {day:o.weekday.toUpperCase(), time:o.hour+":"+o.minute+" "+o.dayPeriod, zone:o.timeZoneName};
+  }
+  function draw(){
+    ctx.fillStyle="#fff"; ctx.fillRect(0,0,W,H);
+    if(baseImg) ctx.drawImage(baseImg,0,HEAD,MW,MH); else { ctx.fillStyle="#c9d8e4"; ctx.fillRect(0,HEAD,MW,MH); }
+    var n=usable(), min=0;
+    if(META&&n>0){
+      var pos=Math.min(head,n-1), a=Math.floor(pos), b=Math.min(a+1,n-1);
+      min=META.minutes[a]+(pos-a)*META.step;
+      gl.viewport(0,0,MW,MH); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex[a]);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,tex[b]);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,palTex);
+      gl.uniform1f(U.t,pos-a);
+      gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+      ctx.drawImage(glc,0,HEAD);
+    }
+    if(topImg) ctx.drawImage(topImg,0,HEAD,MW,MH);
+    if(!META) return;
+
+    // header
+    ctx.textBaseline="middle"; ctx.fillStyle="#111";
+    ctx.font='600 44px "Barlow Condensed", Barlow, sans-serif'; ctx.textAlign="left";
+    ctx.fillText(META.name+"  ·  Futurecast radar", 26, HEAD/2+2);
+    ctx.textAlign="right"; ctx.font='600 34px "Barlow Condensed", Barlow, sans-serif';
+    ctx.fillText("ryansajdak.com", W-26, HEAD/2+2);
+
+    // the clock, the thing a futurecast is read by
+    var c=clock(min), x=26, y=HEAD+24;
+    ctx.font='600 62px "Barlow Condensed", Barlow, sans-serif'; ctx.textAlign="left";
+    var wDay=ctx.measureText(c.day).width, wTime=ctx.measureText(c.time).width;
+    ctx.font='500 30px "Barlow Condensed", Barlow, sans-serif'; var wZone=ctx.measureText(c.zone).width;
+    var bw=22+wDay+22+wTime+14+wZone+24;
+    ctx.fillStyle="rgba(15,23,35,.92)"; rounded(x,y,bw,86,12); ctx.fill();
+    ctx.fillStyle="#4ea3ff"; rounded(x,y,22+wDay+11,86,12); ctx.fill(); ctx.fillRect(x+12,y,wDay+21,86);
+    ctx.font='600 62px "Barlow Condensed", Barlow, sans-serif';
+    ctx.fillStyle="#04121f"; ctx.fillText(c.day, x+22, y+46);
+    ctx.fillStyle="#fff"; ctx.fillText(c.time, x+22+wDay+22, y+46);
+    ctx.font='500 30px "Barlow Condensed", Barlow, sans-serif'; ctx.fillStyle="#b9c8da";
+    ctx.fillText(c.zone, x+22+wDay+22+wTime+14, y+54);
+
+    // legend
+    var lx=26, ly=H-26-126, lw=330;
+    ctx.fillStyle="rgba(255,255,255,.90)"; rounded(lx,ly,lw,126,10); ctx.fill();
+    META.groups.forEach(function(g,k){
+      var yy=ly+18+k*36;
+      ctx.font='600 24px Barlow, sans-serif'; ctx.fillStyle="#111"; ctx.textAlign="left"; ctx.fillText(g, lx+16, yy+11);
+      for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[k*6+i]; ctx.fillRect(lx+86+i*26, yy, 26, 22); }
+    });
+    ctx.font='500 19px Barlow, sans-serif'; ctx.fillStyle="#5a6570"; ctx.textAlign="left";
+    ctx.fillText("light", lx+252, ly+22+11-11); ctx.fillText("to heavy", lx+252, ly+22+11+13);
+
+    // credit and a thin line showing where in the loop this is
+    ctx.textAlign="right"; ctx.font='500 19px Barlow, sans-serif';
+    ctx.lineWidth=4; ctx.strokeStyle="rgba(255,255,255,.85)"; ctx.fillStyle="#333";
+    ctx.strokeText("Data: "+META.credit, W-20, H-26); ctx.fillText("Data: "+META.credit, W-20, H-26);
+    var total=META.minutes.length-1;
+    ctx.fillStyle="rgba(15,23,35,.25)"; ctx.fillRect(0,H-8,W,8);
+    ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,H-8,W*(total?Math.min(head,total)/total:0),8);
+  }
+
+  // ---- playback ----
+  var SECONDS={hrrr:12, nam:15, gfs:15, ecmwf:15};       // one pass at normal speed
+  function tick(now){
+    requestAnimationFrame(tick);
+    var dt=Math.min(0.1,(now-last)/1000); last=now;
+    var n=usable();
+    if(META&&playing&&n>1){
+      var end=n-1, rate=(META.minutes.length-1)/SECONDS[MODEL]*(recorder?1:parseFloat($("speed").value));
+      if(head>=end){                                      // rest on the last frame, then go round
+        hold+=dt;
+        if(recorder&&hold>0.8){ stopRecording(false); }
+        else if(hold>1.2){ head=0; hold=0; }
+      } else { head=Math.min(end, head+rate*dt); }
+    }
+    if(META){
+      $("scrub").max=Math.max(1,(META.minutes.length-1)*10); if(document.activeElement!==$("scrub")) $("scrub").value=Math.round(head*10);
+      $("note").textContent=loaded<META.minutes.length ? "loading weather "+loaded+" of "+META.minutes.length
+        : (recorder?"recording… ":"")+"run "+META.run.slice(8)+"Z, "+META.minutes.length+" times";
+    }
+    draw();
+  }
+
+  // ---- video ----
+  function stopRecording(discard){
+    if(!recorder) return;
+    var r=recorder; recorder=null; r._discard=discard; try{ r.stop(); }catch(e){}
+    $("rec").textContent="Save as video";
+  }
+  $("rec").addEventListener("click",function(){
+    if(recorder){ stopRecording(true); return; }
+    if(!window.MediaRecorder){ $("note").textContent="this browser cannot record video"; return; }
+    var types=["video/mp4;codecs=avc1.640028","video/mp4","video/webm;codecs=vp9","video/webm"], type=types.filter(function(t){ return MediaRecorder.isTypeSupported(t); })[0];
+    var chunks=[], rec=new MediaRecorder(stage.captureStream(30),{mimeType:type,videoBitsPerSecond:14000000});
+    rec.ondataavailable=function(e){ if(e.data.size) chunks.push(e.data); };
+    rec.onstop=function(){
+      if(rec._discard) return;
+      var a=document.createElement("a"); a.href=URL.createObjectURL(new Blob(chunks,{type:type}));
+      a.download="futurecast_"+MODEL+"_"+REGION+"_"+META.run+(type.indexOf("mp4")>=0?".mp4":".webm");
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+    head=0; hold=0; playing=true; $("play").textContent="Pause";
+    recorder=rec; rec.start(); $("rec").textContent="Stop recording";
+  });
+
+  // ---- controls ----
+  $("play").addEventListener("click",function(){ playing=!playing; $("play").textContent=playing?"Pause":"Play"; });
+  $("scrub").addEventListener("input",function(e){ head=Math.min(Math.max(0,usable()-1), e.target.value/10); hold=0; });
+  $("model").addEventListener("change",function(e){ MODEL=e.target.value; try{ localStorage.setItem("loopmodel",MODEL); }catch(x){} load(); });
+  $("region").addEventListener("change",function(e){ REGION=e.target.value; try{ localStorage.setItem("loopregion",REGION); }catch(x){} load(); });
+  document.addEventListener("keydown",function(e){
+    if(e.target.tagName==="SELECT"||e.target.tagName==="INPUT") return;
+    if(e.code==="Space"){ e.preventDefault(); $("play").click(); }
+  });
+
+  if(!gl){ $("note").textContent="this browser has no WebGL 2"; return; }
+  initGL();
+  // the stage draws its own type, so the fonts have to be in before the first frame
+  var fonts=document.fonts?Promise.all([document.fonts.load('600 44px "Barlow Condensed"'),document.fonts.load('500 30px "Barlow Condensed"'),document.fonts.load('600 24px Barlow'),document.fonts.load('500 19px Barlow')]):Promise.resolve();
+  fonts.catch(function(){}).then(function(){ load(); requestAnimationFrame(function(t){ last=t; tick(t); }); });
+})();
+</script>
+</body>
+</html>

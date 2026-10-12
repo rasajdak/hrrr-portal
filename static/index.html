@@ -96,6 +96,9 @@
   body.static #legend, body.static #meteo, body.static a.credit, body.static #opwrap, body.static #basewrap{display:none}
   #sharehead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
   #sharehead .sp{flex:1}
+  #bar a.btn{font-size:13.5px;font-weight:500;color:var(--ink);background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:6px 9px;text-decoration:none}
+  #bar a.btn:hover{border-color:var(--accent)}
   #sharehead a.btn{font-size:13.5px;font-weight:500;color:var(--ink);background:var(--panel2);border:1px solid var(--line);
     border-radius:8px;padding:6px 9px;text-decoration:none}
   #sharehead a.btn:hover{border-color:var(--accent)}
@@ -135,6 +138,7 @@
   </div>
   <div class="group" id="opwrap"><label>Opacity</label><input type="range" id="opacity" min="20" max="100" value="82" /></div>
   <button id="sharebtn" title="Switch between the finished map image and the live, zoomable map">Live map</button>
+  <a class="btn" id="looplink" href="/loop" title="The animated futurecast: radar by precipitation type, in motion">Loop</a>
   <span class="pill" id="runpill">connecting…</span>
 </div>
 
