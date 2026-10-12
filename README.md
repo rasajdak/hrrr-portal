@@ -143,12 +143,18 @@ sudo certbot --nginx -d your.domain
 
 Then browse to the droplet's IP (or domain). Logs: `journalctl -u hrrr-portal -f`.
 
-### Optional: pre-warm the cache
-Add a cron job that renders the common fields for the latest run so the first
-visitor never waits:
+### Maps drawn ahead of time
+`prewarm.py` draws the static maps listed in its `PLAN` (model, fields, regions,
+every frame) as soon as a model posts a new run, so the page opens them
+instantly. A systemd timer runs one pass every 10 minutes at low priority; a
+pass skips maps that exist, stops after 8 minutes, and deletes cached frames
+older than 48 hours. Edit `PLAN` to change the set; it is CPU on a one-core box.
+
 ```bash
-# hits the API for a few fields at F0 after each hourly run posts
-0 * * * * for f in refc t2m cape wind10m; do curl -s "http://127.0.0.1:8000/api/overlay?field=$f&fxx=0" -o /dev/null; done
+sudo cp deploy/hrrr-prewarm.service deploy/hrrr-prewarm.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now hrrr-prewarm.timer
+journalctl -u hrrr-prewarm -n 20            # "drew N maps in S s" per pass
+sudo systemctl disable --now hrrr-prewarm.timer   # turn it off
 ```
 
 ## Endpoints

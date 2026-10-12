@@ -1,0 +1,15 @@
+# /etc/systemd/system/hrrr-prewarm.service
+# One pass of prewarm.py: draw the planned static maps for any new model run.
+[Unit]
+Description=HRRR portal: draw static maps for new model runs
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=hrrr
+WorkingDirectory=/opt/hrrr-portal
+Environment=HOME=/opt/hrrr-portal
+# stay out of the web workers' way on a one-core box
+Nice=15
+ExecStart=/opt/miniforge3/envs/hrrr-portal/bin/python prewarm.py
+TimeoutStartSec=900
