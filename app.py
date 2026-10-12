@@ -188,8 +188,7 @@ def loop_frame():
         if model not in loop.LOOPS:
             raise ValueError("no loop for %r" % model)
         region = request.args.get("region", "wny")
-        if region not in hr.REGIONS:
-            raise ValueError("unknown region %r" % region)
+        hr.region_parts(region)                 # 'name' or 'name@tall', else ValueError
         run = _parse_run(request.args.get("run"), model) if request.args.get("run") else loop.latest_run(model)
         path = loop.frame_png(model, run, int(request.args.get("m", "0")), region)
     except ValueError as e:
@@ -208,8 +207,7 @@ def loop_flow():
         if model not in loop.LOOPS:
             raise ValueError("no loop for %r" % model)
         region = request.args.get("region", "wny")
-        if region not in hr.REGIONS:
-            raise ValueError("unknown region %r" % region)
+        hr.region_parts(region)                 # 'name' or 'name@tall', else ValueError
         run = _parse_run(request.args.get("run"), model) if request.args.get("run") else loop.latest_run(model)
         path = loop.flow_png(model, run, int(request.args.get("m", "0")), region)
     except ValueError as e:

@@ -70,6 +70,23 @@ IMG_WIDTH = 2400  # px; height derived from the mercator aspect of EXTENT
 # PNG rendered the old way is served forever.
 RENDER_REV = "m10"
 
+# One drawing at a time in each process. The web server answers requests on
+# several threads, and neither matplotlib's figure state nor the projection
+# transforms under cartopy are safe to share between them: two requests once
+# built the same basemap at the same moment and pickled a tangle of lines
+# hundreds of kilometres long. Separate worker processes still draw in parallel.
+import threading
+GEO_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def inner(*a, **k):
+        with GEO_LOCK:
+            return fn(*a, **k)
+    return inner
+
+
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -896,6 +913,7 @@ def render(field_key, run_dt, fxx, model="hrrr"):
     return out_path
 
 
+@_locked
 def _draw(f, data, lat, lon, out_path, stride):
     cmap, norm = _cmap_norm(f)
     w, e, s, n = EXTENT
@@ -953,6 +971,7 @@ def _colorbar(f, ax, tick_color, edge_color, size):
     return cb
 
 
+@_locked
 def render_legend(field_key, model="hrrr"):
     """Return PNG bytes of a horizontal colorbar for the given field."""
     f = spec(field_key, model)
@@ -1188,10 +1207,11 @@ def ready_maps(model, run_dt):
     return out
 
 
-BASE_REV = "b1"
+BASE_REV = "b2"
 _BASE = {}              # region -> {layer: [geometries in map coordinates]}
 
 
+@_locked
 def _basemap(region, proj, x0, x1, y0, y1):
     """
     Land, lakes, borders, roads and counties for one region, already projected
@@ -1214,7 +1234,7 @@ def _basemap(region, proj, x0, x1, y0, y1):
             pass                                          # half-written: rebuild
     import cartopy.feature as cfeature
     import shapely.geometry as sg
-    w, e, s, n = REGIONS[region]["box"]
+    w, e, s, n = REGIONS[region_parts(region)[0]]["box"]
     pc = ccrs.PlateCarree()
     res = "10m" if (e - w) < 14 else "50m"
     regional, close = (e - w) < 22, (e - w) < 10
@@ -1258,6 +1278,22 @@ def _basemap(region, proj, x0, x1, y0, y1):
     return base
 
 
+TALL = 1080.0 / 1920.0     # a phone held upright
+
+
+def region_parts(region):
+    """
+    ('wny', False) for 'wny', ('wny', True) for 'wny@tall': the same region
+    framed upright for a phone, which the animated loop offers for reels.
+    Raises ValueError for a region that does not exist.
+    """
+    base, _, how = region.partition("@")
+    if base not in REGIONS or how not in ("", "tall"):
+        raise ValueError("unknown region %r" % region)
+    return base, how == "tall"
+
+
+@_locked
 def frame(region):
     """
     (proj, x0, x1, y0, y1): the Lambert conformal fitted to a region and the
@@ -1266,7 +1302,8 @@ def frame(region):
     animated loop draws into this same frame, which is why its layers line up
     with the static maps'.
     """
-    w, e, s, n = REGIONS[region]["box"]
+    base, tall = region_parts(region)
+    w, e, s, n = REGIONS[base]["box"]
     pc = ccrs.PlateCarree()
     proj = ccrs.LambertConformal(
         central_longitude=(w + e) / 2, central_latitude=(s + n) / 2,
@@ -1276,6 +1313,14 @@ def frame(region):
     edge_lat = np.concatenate([np.full(40, s), np.full(40, n), s + (n - s) * t, s + (n - s) * t])
     pts = proj.transform_points(pc, edge_lon, edge_lat)
     x0, x1, y0, y1 = pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max()
+    if tall:
+        # An upright frame cannot hold a region that is wider than it is tall.
+        # Keep most of the width, or about twice the height, whichever asks for
+        # less, and centre it: the sides are trimmed and the map runs further
+        # north and south than the landscape one.
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        h = min(0.85 * (x1 - x0) / TALL, 1.9 * (y1 - y0))
+        return proj, cx - h * TALL / 2, cx + h * TALL / 2, cy - h / 2, cy + h / 2
     want = (MAP_W * _MAP_AX[2]) / (MAP_H * _MAP_AX[3])
     if (x1 - x0) / (y1 - y0) < want:
         grow = (y1 - y0) * want - (x1 - x0)
@@ -1286,6 +1331,7 @@ def frame(region):
     return proj, x0, x1, y0, y1
 
 
+@_locked
 def city_labels(region, limit=22):
     """
     [(name, x, y, major)] for the cities a region's map has room for, in map
@@ -1295,7 +1341,9 @@ def city_labels(region, limit=22):
     cxy = proj.transform_points(ccrs.PlateCarree(), np.array([c[2] for c in CITIES]),
                                 np.array([c[1] for c in CITIES]))
     kept = []
-    gap = (x1 - x0) * 0.085                       # a label block is about this wide
+    # a label block is about this wide (an upright frame is narrow, so there the
+    # room is reckoned from its height)
+    gap = 0.085 * max(x1 - x0, 0.9 * (y1 - y0))
     mx, my = (x1 - x0) * 0.03, (y1 - y0) * 0.04
     for rank, ((name, _, _), (cx, cy, _)) in enumerate(zip(CITIES, cxy)):
         if not (x0 + mx < cx < x1 - mx and y0 + my < cy < y1 - my):
@@ -1308,13 +1356,14 @@ def city_labels(region, limit=22):
     return kept
 
 
+@_locked
 def water_labels(region, cities):
     """[(name, x, y)] for the big waters in a regional frame, clear of the cities."""
-    w, e, _, _ = REGIONS[region]["box"]
+    w, e, _, _ = REGIONS[region_parts(region)[0]]["box"]
     if (e - w) >= 22:
         return []
     proj, x0, x1, y0, y1 = frame(region)
-    gap = (x1 - x0) * 0.085
+    gap = 0.085 * max(x1 - x0, 0.9 * (y1 - y0))
     wxy = proj.transform_points(ccrs.PlateCarree(), np.array([c[2] for c in WATERS]),
                                 np.array([c[1] for c in WATERS]))
     out = []
@@ -1326,6 +1375,7 @@ def water_labels(region, cities):
     return out
 
 
+@_locked
 def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
 
     reg = REGIONS[region]

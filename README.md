@@ -153,8 +153,11 @@ the echo strength where rain, mix and snow own the spot. A WebGL shader blends
 two neighbouring times and colours the result, sixty times a second, and the
 whole stage is a 1920 x 1080 canvas that the Save as video button records to
 MP4. HRRR runs on its 15-minute sub-hourly fields (73 frames over 18 hours);
-NAM and GFS are hourly, ECMWF 3-hourly. `prewarm.py` draws the frames ahead for
-`LOOP_AREAS`.
+NAM and GFS are hourly, ECMWF 3-hourly. Between times the weather is carried
+along a flow field worked out per pair of frames (`/api/loop/flow`), not faded.
+Any region can be asked for as `name@tall`, an upright 1080 x 1920 framing for
+reels: the map fills the frame and the title, clock and legend sit in the band
+the apps leave clear. `prewarm.py` draws the frames ahead for `LOOP_AREAS`.
 
 ### Maps drawn ahead of time
 `prewarm.py` draws the static maps listed in its `PLAN` (per model: totals at a

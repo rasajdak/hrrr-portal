@@ -23,7 +23,9 @@
   button:disabled{opacity:.5;cursor:default}
   .sp{flex:1}
   /* the stage is a 1920 x 1080 picture; the page only scales it */
-  #stage{display:block;width:100%;height:auto;border-radius:10px;background:#fff;aspect-ratio:16/9}
+  #stage{display:block;width:100%;height:auto;border-radius:10px;background:#fff;aspect-ratio:16/9;margin:0 auto}
+  /* upright: a 1080 x 1920 reel, shown as tall as the window allows */
+  #stage.tall{aspect-ratio:9/16;width:auto;height:min(82vh,1920px);max-width:100%}
   #under{display:flex;align-items:center;gap:12px;margin-top:10px}
   #scrub{flex:1;accent-color:var(--accent)}
   #note{font-size:13px;color:var(--muted);min-width:210px;text-align:right;font-variant-numeric:tabular-nums}
@@ -36,6 +38,8 @@
     <h1>Futurecast loop</h1>
     <div class="group"><label for="model">Model</label><select id="model"></select></div>
     <div class="group"><label for="region">Region</label><select id="region"></select></div>
+    <div class="group"><label for="shape">Shape</label>
+      <select id="shape"><option value="wide">Landscape 16:9</option><option value="tall">Vertical 9:16 (reels)</option></select></div>
     <div class="group"><label for="speed">Speed</label>
       <select id="speed"><option value="0.5">Slow</option><option value="1" selected>Normal</option><option value="2">Fast</option></select></div>
     <span class="sp"></span>
@@ -55,7 +59,16 @@
 (function(){
   "use strict";
   var $=function(id){ return document.getElementById(id); };
-  var W=1920, H=1080, HEAD=75, MW=1920, MH=1005;      // header strip + map area
+  // Landscape: a title strip over the map. Vertical: the map fills the whole
+  // reel and everything else floats on it, inside the band the apps leave clear.
+  var W=1920, H=1080, HEAD=75, MW=1920, MH=1005, TALL=false;
+  try{ TALL=localStorage.getItem("loopshape")==="tall"; }catch(e){}
+  function setShape(){
+    if(TALL){ W=1080; H=1920; HEAD=0; MW=1080; MH=1920; } else { W=1920; H=1080; HEAD=75; MW=1920; MH=1005; }
+    stage.width=W; stage.height=H; stage.classList.toggle("tall",TALL);
+    glc.width=MW; glc.height=MH;
+  }
+  function regionKey(){ return REGION+(TALL?"@tall":""); }
 
   var stage=$("stage"), ctx=stage.getContext("2d");
   // The weather is drawn on its own WebGL canvas and laid between the base and
@@ -133,7 +146,8 @@
     stopRecording(true);
     tex.concat(flow).forEach(function(t){ if(t) gl.deleteTexture(t); }); tex=[]; flow=[]; loaded=0; head=0; META=null; baseImg=topImg=null;
     $("rec").disabled=true; $("note").textContent="loading…"; draw();
-    fetch("/api/loop?model="+MODEL+"&region="+REGION).then(function(r){ return r.json(); }).then(function(m){
+    var RK=encodeURIComponent(regionKey());
+    fetch("/api/loop?model="+MODEL+"&region="+RK).then(function(r){ return r.json(); }).then(function(m){
       if(my!==token) return;
       if(m.error) throw new Error(m.error);
       META=m; tex=new Array(m.minutes.length).fill(null); flow=new Array(m.minutes.length).fill(null);
@@ -143,20 +157,20 @@
       }
       $("model").value=MODEL; $("region").value=REGION;
       setPalette(m.colors);
-      image("/api/loop/base?region="+REGION+"&layer=base").then(function(i){ if(my===token) baseImg=i; });
-      image("/api/loop/base?region="+REGION+"&layer=top").then(function(i){ if(my===token) topImg=i; });
+      image("/api/loop/base?region="+RK+"&layer=base").then(function(i){ if(my===token) baseImg=i; });
+      image("/api/loop/base?region="+RK+"&layer=top").then(function(i){ if(my===token) topImg=i; });
       // frames in order, four at a time: the loop can start before they are all in
       var next=0;
       function one(){
         if(my!==token||next>=m.minutes.length) return;
         var k=next++;
-        image("/api/loop/frame?model="+MODEL+"&run="+m.run+"&region="+REGION+"&m="+m.minutes[k]).then(function(img){
+        image("/api/loop/frame?model="+MODEL+"&run="+m.run+"&region="+RK+"&m="+m.minutes[k]).then(function(img){
           if(my!==token) return;
           tex[k]=makeTex(img); loaded++;
           if(loaded===m.minutes.length) $("rec").disabled=false;
         }).catch(function(){}).then(function(){
           // the motion from the frame before to this one: both now exist on the server
-          if(k>0&&my===token) image("/api/loop/flow?model="+MODEL+"&run="+m.run+"&region="+REGION+"&m="+m.minutes[k-1])
+          if(k>0&&my===token) image("/api/loop/flow?model="+MODEL+"&run="+m.run+"&region="+RK+"&m="+m.minutes[k-1])
             .then(function(img){ if(my===token) flow[k-1]=makeTex(img); }).catch(function(){});
         }).then(one);
       }
@@ -192,45 +206,65 @@
     if(topImg) ctx.drawImage(topImg,0,HEAD,MW,MH);
     if(!META) return;
 
+    var c=clock(min), total=META.minutes.length-1, at=total?Math.min(head,total)/total:0;
+    if(TALL){
+      // title card, clock and legend stacked inside the middle of the reel: the
+      // top ~250 px and bottom ~380 px are where the apps put their own buttons
+      ctx.fillStyle="rgba(255,255,255,.93)"; rounded(40,262,W-80,132,16); ctx.fill();
+      ctx.textBaseline="middle"; ctx.textAlign="left"; ctx.fillStyle="#111";
+      ctx.font='600 58px "Barlow Condensed", Barlow, sans-serif'; ctx.fillText("Futurecast radar", 68, 306);
+      ctx.font='500 34px "Barlow Condensed", Barlow, sans-serif'; ctx.fillStyle="#3a4048"; ctx.fillText(META.name, 68, 360);
+      ctx.textAlign="right"; ctx.fillStyle="#111"; ctx.font='600 36px "Barlow Condensed", Barlow, sans-serif';
+      ctx.fillText("ryansajdak.com", W-68, 330);
+      drawClock(c, 40, 416, 1.25);
+      drawLegend(40, H-400-158, 1.25);
+      ctx.textAlign="right"; ctx.font='500 22px Barlow, sans-serif'; ctx.lineWidth=4;
+      ctx.strokeStyle="rgba(255,255,255,.85)"; ctx.fillStyle="#333";
+      ctx.strokeText("Data: "+META.credit, W-40, H-400-20); ctx.fillText("Data: "+META.credit, W-40, H-400-20);
+      ctx.fillStyle="rgba(15,23,35,.25)"; ctx.fillRect(40,H-384,W-80,8);
+      ctx.fillStyle="#4ea3ff"; ctx.fillRect(40,H-384,(W-80)*at,8);
+      return;
+    }
     // header
     ctx.textBaseline="middle"; ctx.fillStyle="#111";
     ctx.font='600 44px "Barlow Condensed", Barlow, sans-serif'; ctx.textAlign="left";
     ctx.fillText(META.name+"  ·  Futurecast radar", 26, HEAD/2+2);
     ctx.textAlign="right"; ctx.font='600 34px "Barlow Condensed", Barlow, sans-serif';
     ctx.fillText("ryansajdak.com", W-26, HEAD/2+2);
-
-    // the clock, the thing a futurecast is read by
-    var c=clock(min), x=26, y=HEAD+24;
-    ctx.font='600 62px "Barlow Condensed", Barlow, sans-serif'; ctx.textAlign="left";
-    var wDay=ctx.measureText(c.day).width, wTime=ctx.measureText(c.time).width;
-    ctx.font='500 30px "Barlow Condensed", Barlow, sans-serif'; var wZone=ctx.measureText(c.zone).width;
-    var bw=22+wDay+22+wTime+14+wZone+24;
-    ctx.fillStyle="rgba(15,23,35,.92)"; rounded(x,y,bw,86,12); ctx.fill();
-    ctx.fillStyle="#4ea3ff"; rounded(x,y,22+wDay+11,86,12); ctx.fill(); ctx.fillRect(x+12,y,wDay+21,86);
-    ctx.font='600 62px "Barlow Condensed", Barlow, sans-serif';
-    ctx.fillStyle="#04121f"; ctx.fillText(c.day, x+22, y+46);
-    ctx.fillStyle="#fff"; ctx.fillText(c.time, x+22+wDay+22, y+46);
-    ctx.font='500 30px "Barlow Condensed", Barlow, sans-serif'; ctx.fillStyle="#b9c8da";
-    ctx.fillText(c.zone, x+22+wDay+22+wTime+14, y+54);
-
-    // legend
-    var lx=26, ly=H-26-126, lw=330;
-    ctx.fillStyle="rgba(255,255,255,.90)"; rounded(lx,ly,lw,126,10); ctx.fill();
-    META.groups.forEach(function(g,k){
-      var yy=ly+18+k*36;
-      ctx.font='600 24px Barlow, sans-serif'; ctx.fillStyle="#111"; ctx.textAlign="left"; ctx.fillText(g, lx+16, yy+11);
-      for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[k*6+i]; ctx.fillRect(lx+86+i*26, yy, 26, 22); }
-    });
-    ctx.font='500 19px Barlow, sans-serif'; ctx.fillStyle="#5a6570"; ctx.textAlign="left";
-    ctx.fillText("light", lx+252, ly+22+11-11); ctx.fillText("to heavy", lx+252, ly+22+11+13);
-
+    drawClock(c, 26, HEAD+24, 1);
+    drawLegend(26, H-26-126, 1);
     // credit and a thin line showing where in the loop this is
     ctx.textAlign="right"; ctx.font='500 19px Barlow, sans-serif';
     ctx.lineWidth=4; ctx.strokeStyle="rgba(255,255,255,.85)"; ctx.fillStyle="#333";
     ctx.strokeText("Data: "+META.credit, W-20, H-26); ctx.fillText("Data: "+META.credit, W-20, H-26);
-    var total=META.minutes.length-1;
     ctx.fillStyle="rgba(15,23,35,.25)"; ctx.fillRect(0,H-8,W,8);
-    ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,H-8,W*(total?Math.min(head,total)/total:0),8);
+    ctx.fillStyle="#4ea3ff"; ctx.fillRect(0,H-8,W*at,8);
+  }
+
+  // the clock, the thing a futurecast is read by (k scales it for the reel)
+  function drawClock(c, x, y, k){
+    var big='600 '+Math.round(62*k)+'px "Barlow Condensed", Barlow, sans-serif', small='500 '+Math.round(30*k)+'px "Barlow Condensed", Barlow, sans-serif';
+    ctx.textBaseline="middle"; ctx.textAlign="left";
+    ctx.font=big; var wDay=ctx.measureText(c.day).width, wTime=ctx.measureText(c.time).width;
+    ctx.font=small; var wZone=ctx.measureText(c.zone).width;
+    var p=22*k, h=86*k, bw=p+wDay+p+wTime+14*k+wZone+24*k;
+    ctx.fillStyle="rgba(15,23,35,.92)"; rounded(x,y,bw,h,12*k); ctx.fill();
+    ctx.fillStyle="#4ea3ff"; rounded(x,y,p+wDay+p/2,h,12*k); ctx.fill(); ctx.fillRect(x+12*k,y,wDay+p-1*k,h);
+    ctx.font=big; ctx.fillStyle="#04121f"; ctx.fillText(c.day, x+p, y+h*0.535);
+    ctx.fillStyle="#fff"; ctx.fillText(c.time, x+p+wDay+p, y+h*0.535);
+    ctx.font=small; ctx.fillStyle="#b9c8da"; ctx.fillText(c.zone, x+p+wDay+p+wTime+14*k, y+h*0.63);
+  }
+  function drawLegend(lx, ly, k){
+    var lw=330*k, lh=126*k;
+    ctx.fillStyle="rgba(255,255,255,.90)"; rounded(lx,ly,lw,lh,10*k); ctx.fill();
+    ctx.textBaseline="middle"; ctx.textAlign="left";
+    META.groups.forEach(function(g,n){
+      var yy=ly+(18+n*36)*k;
+      ctx.font='600 '+Math.round(24*k)+'px Barlow, sans-serif'; ctx.fillStyle="#111"; ctx.fillText(g, lx+16*k, yy+11*k);
+      for(var i=0;i<6;i++){ ctx.fillStyle=META.colors[n*6+i]; ctx.fillRect(lx+(86+i*26)*k, yy, 26*k+1, 22*k); }
+    });
+    ctx.font='500 '+Math.round(19*k)+'px Barlow, sans-serif'; ctx.fillStyle="#5a6570";
+    ctx.fillText("light", lx+252*k, ly+22*k); ctx.fillText("to heavy", lx+252*k, ly+46*k);
   }
 
   // ---- playback ----
@@ -270,7 +304,7 @@
     rec.onstop=function(){
       if(rec._discard) return;
       var a=document.createElement("a"); a.href=URL.createObjectURL(new Blob(chunks,{type:type}));
-      a.download="futurecast_"+MODEL+"_"+REGION+"_"+META.run+(type.indexOf("mp4")>=0?".mp4":".webm");
+      a.download="futurecast_"+MODEL+"_"+REGION+(TALL?"_vertical":"")+"_"+META.run+(type.indexOf("mp4")>=0?".mp4":".webm");
       document.body.appendChild(a); a.click(); a.remove();
     };
     head=0; hold=0; playing=true; $("play").textContent="Pause";
@@ -282,13 +316,14 @@
   $("scrub").addEventListener("input",function(e){ head=Math.min(Math.max(0,usable()-1), e.target.value/10); hold=0; });
   $("model").addEventListener("change",function(e){ MODEL=e.target.value; try{ localStorage.setItem("loopmodel",MODEL); }catch(x){} load(); });
   $("region").addEventListener("change",function(e){ REGION=e.target.value; try{ localStorage.setItem("loopregion",REGION); }catch(x){} load(); });
+  $("shape").addEventListener("change",function(e){ TALL=e.target.value==="tall"; try{ localStorage.setItem("loopshape",TALL?"tall":"wide"); }catch(x){} setShape(); load(); });
   document.addEventListener("keydown",function(e){
     if(e.target.tagName==="SELECT"||e.target.tagName==="INPUT") return;
     if(e.code==="Space"){ e.preventDefault(); $("play").click(); }
   });
 
   if(!gl){ $("note").textContent="this browser has no WebGL 2"; return; }
-  initGL();
+  initGL(); setShape(); $("shape").value=TALL?"tall":"wide";
   // the stage draws its own type, so the fonts have to be in before the first frame
   var fonts=document.fonts?Promise.all([document.fonts.load('600 44px "Barlow Condensed"'),document.fonts.load('500 30px "Barlow Condensed"'),document.fonts.load('600 24px Barlow'),document.fonts.load('500 19px Barlow')]):Promise.resolve();
   fonts.catch(function(){}).then(function(){ load(); requestAnimationFrame(function(t){ last=t; tick(t); }); });

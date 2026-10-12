@@ -55,7 +55,7 @@ PLAN = {
 
 # The animated loop's data frames, drawn ahead for these regions. A frame's
 # cost is its six downloads, shared by every region, so regions are cheap here.
-LOOP_AREAS = ["wny", "newyork", "northeast"]
+LOOP_AREAS = ["wny", "newyork", "northeast", "wny@tall", "northeast@tall"]   # @tall: upright, for reels
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
 # Cached frames older than this are deleted. The set above writes roughly 20 GB

@@ -36,8 +36,17 @@ import numpy as np
 import hrrr_render as hr
 
 REV = "L1"
-BASE_W, BASE_H = 1920, 1005          # the map area of a 1920 x 1080 video frame
-FRAME_W, FRAME_H = 960, 502
+
+
+def dims(region):
+    """
+    (base width, base height, frame width, frame height) in pixels. Landscape:
+    the map area of a 1920 x 1080 video, under its title strip. A region asked
+    for as 'name@tall' is framed upright, 1080 x 1920, the whole of a reel.
+    Data frames are half the base size either way.
+    """
+    return (1080, 1920, 540, 960) if hr.region_parts(region)[1] else (1920, 1005, 960, 502)
+
 
 # model -> minutes between frames, and how far the loop runs. HRRR posts
 # 15-minute fields in its sub-hourly files, which is what makes its loop smooth;
@@ -106,6 +115,7 @@ def _fields(model, run_dt, m):
 _INDEX = {}             # (model, region) -> (i, j) fractional grid indices per frame pixel
 
 
+@hr._locked
 def _index(model, region, lat, lon):
     """
     Where each pixel of the frame falls on the model's grid, as fractional row
@@ -119,6 +129,7 @@ def _index(model, region, lat, lon):
         return _INDEX[key]
     import cartopy.crs as ccrs
     proj, x0, x1, y0, y1 = hr.frame(region)
+    _, _, FRAME_W, FRAME_H = dims(region)
     xs = x0 + (np.arange(FRAME_W) + 0.5) * (x1 - x0) / FRAME_W
     ys = y1 - (np.arange(FRAME_H) + 0.5) * (y1 - y0) / FRAME_H
     X, Y = np.meshgrid(xs, ys)
@@ -174,7 +185,7 @@ def frames(model, run_dt, m, regions, flows=True):
         i, j = _index(model, region, lat, lon)
         # Coarse grids are stretched a long way to fill a frame; smoothing after
         # the stretch rounds off the facets a bilinear lookup leaves behind.
-        cell = abs(float(i[0, 0] - i[-1, 0])) / FRAME_H           # grid cells per pixel
+        cell = abs(float(i[0, 0] - i[-1, 0])) / i.shape[0]        # grid cells per pixel
         passes = 2 if cell > 0.5 else int(min(10, round(1.5 / max(cell, 0.05))))
         rgb = np.stack([hr._smooth(_sample(c, i, j), passes) for c in chans], axis=-1)
         img = Image.fromarray(np.clip(rgb / 75.0 * 255.0, 0, 255).astype("uint8"), "RGB")
@@ -206,6 +217,7 @@ FLOW_REV = "F1"
 _DS, _WIN, _STRIDE = 4, 5, 4        # work at 1/4 size; 11 x 11 windows every 4th cell
 
 
+@hr._locked
 def flow_scale(model, region):
     """
     The largest displacement, in frame pixels, the flow of this model and
@@ -213,7 +225,7 @@ def flow_scale(model, region):
     search would stop being a search. It is also the scale the PNG is coded in.
     """
     _, x0, x1, _, _ = hr.frame(region)
-    px = (x1 - x0) / FRAME_W                                  # metres per frame pixel
+    px = (x1 - x0) / dims(region)[2]                          # metres per frame pixel
     return float(min(96.0, max(8.0, 40.0 * LOOPS[model]["step"] * 60.0 / px)))
 
 
@@ -308,6 +320,7 @@ def frame_png(model, run_dt, m, region):
 
 
 # ------------------------------------------------------------ base layers ---
+@hr._locked
 def base_png(region, layer):
     """
     'base': land, water and shaded terrain. 'top': roads, borders, counties and
@@ -315,8 +328,8 @@ def base_png(region, layer):
     """
     if layer not in ("base", "top"):
         raise ValueError("layer is base or top")
-    if region not in hr.REGIONS:
-        raise ValueError("unknown region %r" % region)
+    name, _ = hr.region_parts(region)
+    BASE_W, BASE_H, _, _ = dims(region)
     path = os.path.join(hr.CACHE_DIR, "geo", "loop_%s_%s_%s_%s.png" % (
         layer, region, REV, hr.BASE_REV))
     if os.path.exists(path):
@@ -325,7 +338,7 @@ def base_png(region, layer):
     import matplotlib.patheffects as pe
     import relief
     proj, x0, x1, y0, y1 = hr.frame(region)
-    w, e, _, _ = hr.REGIONS[region]["box"]
+    w, e, _, _ = hr.REGIONS[name]["box"]
     regional, close = (e - w) < 22, (e - w) < 10
     dpi = 100
     fig = plt.figure(figsize=(BASE_W / dpi, BASE_H / dpi), dpi=dpi)
@@ -386,15 +399,15 @@ def meta(model, region):
     """Everything the page needs to start: the run, the frame times, the layers."""
     if model not in LOOPS:
         raise ValueError("no loop for %r" % model)
-    if region not in hr.REGIONS:
-        raise ValueError("unknown region %r" % region)
+    name, tall = hr.region_parts(region)
+    BASE_W, BASE_H, FRAME_W, FRAME_H = dims(region)
     run = latest_run(model)
     stamp = run.strftime("%Y%m%d%H")
     mins = minutes(model)
     have = {n for n in os.listdir(hr.CACHE_DIR) if n.startswith("loop_")}
     return dict(
         model=model, name=hr.MODELS[model]["name"], credit=hr.credit(model),
-        region=region, region_label=hr.REGIONS[region]["label"], tz=hr.REGIONS[region]["tz"],
+        region=region, tall=tall, region_label=hr.REGIONS[name]["label"], tz=hr.REGIONS[name]["tz"],
         run=stamp, run_iso=run.strftime("%Y-%m-%dT%H:00:00Z"),
         step=LOOPS[model]["step"], minutes=mins,
         ready=[m for m in mins if os.path.basename(frame_path(model, run, m, region)) in have],
