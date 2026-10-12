@@ -20,10 +20,10 @@ import time
 import hrrr_render as hr
 
 # model -> (fields, regions). Frames are all of the model's. Kept lean on
-# purpose: this set is about 2,600 maps a day. HRRR is the expensive line,
+# purpose: this set is about 3,900 maps a day. HRRR is the expensive line,
 # because it comes round every hour.
 PLAN = [
-    ("hrrr",  ["refc", "apcp_tot", "asnow"],   ["northeast"]),
+    ("hrrr",  ["refc", "apcp_tot", "asnow"],   ["northeast", "wny"]),
     ("nam",   ["apcp_tot", "snow10"],          ["northeast", "wny"]),
     ("gfs",   ["apcp_tot", "snow10"],          ["northeast", "conus"]),
     ("ecmwf", ["apcp_tot", "snow10"],          ["northeast", "conus"]),
