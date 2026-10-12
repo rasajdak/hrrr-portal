@@ -52,7 +52,7 @@ IMG_WIDTH = 2400  # px; height derived from the mercator aspect of EXTENT
 
 # Part of every cache key. Bump it when a colormap or the drawing changes, or a
 # PNG rendered the old way is served forever.
-RENDER_REV = "m5"
+RENDER_REV = "m6"
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -925,17 +925,36 @@ def _bands(f):
     return None
 
 
-def _smooth(a):
-    """3x3 mean that ignores missing cells and leaves the array's shape alone."""
+def _smooth(a, passes=1):
+    """
+    Repeated 3x3 means, which add up to a Gaussian of sigma = sqrt(2/3 * passes)
+    cells. Missing cells are ignored and stay missing; the shape is unchanged.
+    """
     ok = np.isfinite(a)
-    v = np.pad(np.where(ok, a, 0.0), 1, mode="edge")
-    c = np.pad(ok.astype("float32"), 1, mode="edge")
+    out = np.where(ok, a, 0.0).astype("float32")
+    wt = ok.astype("float32")
     n, m = a.shape
-    tot = sum(v[i:i + n, j:j + m] for i in range(3) for j in range(3))
-    cnt = sum(c[i:i + n, j:j + m] for i in range(3) for j in range(3))
-    out = tot / np.maximum(cnt, 1)
+    for _ in range(passes):
+        v, c = np.pad(out * wt, 1, mode="edge"), np.pad(wt, 1, mode="edge")
+        tot = sum(v[i:i + n, j:j + m] for i in range(3) for j in range(3))
+        cnt = sum(c[i:i + n, j:j + m] for i in range(3) for j in range(3))
+        out = tot / np.maximum(cnt, 1e-6)
     out[~ok] = np.nan
     return out
+
+
+def _upsample(a, k):
+    """Bilinear resample to k times the cells along each axis (numpy only)."""
+    if k <= 1:
+        return a
+    n, m = a.shape
+    yi, xi = np.linspace(0, n - 1, (n - 1) * k + 1), np.linspace(0, m - 1, (m - 1) * k + 1)
+    y0 = np.clip(np.floor(yi).astype(int), 0, n - 2)
+    x0 = np.clip(np.floor(xi).astype(int), 0, m - 2)
+    fy, fx = (yi - y0)[:, None], (xi - x0)[None, :]
+    top, bot = a[y0], a[y0 + 1]
+    return (top[:, x0] * (1 - fy) * (1 - fx) + bot[:, x0] * fy * (1 - fx)
+            + top[:, x0 + 1] * (1 - fy) * fx + bot[:, x0 + 1] * fy * fx)
 
 
 def render_map(field_key, run_dt, fxx, region="conus", model="hrrr"):
@@ -1003,16 +1022,27 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region):
     ax.add_feature(cfeature.NaturalEarthFeature("physical", "lakes", res),
                    facecolor="#dbe6ee", edgecolor="none", zorder=1)
     sx, sy, sv = gx[::stride, ::stride], gy[::stride, ::stride], vals[::stride, ::stride]
+    # Smoothing is sized in pixels of the finished sheet, not in grid cells, so a
+    # county-scale map and a national one come out equally soft: a Gaussian of
+    # about 9 px, and never less than 1.5 cells. The printed city values and
+    # the maximum stay raw.
+    px_per_cell = MAP_W * (gx.max() - gx.min()) / (x1 - x0) / max(sv.shape[1], 1)
+    sigma = max(1.5, 9.0 / max(px_per_cell, 0.1))
+    passes = int(min(14, round(1.5 * sigma * sigma)))
     bands = _bands(f)
     if bands:
-        # A banded scale wants real contours. Shading a mesh leaves every band
-        # edge stepped along the grid cells, which shows once a map is zoomed to
-        # a few counties. A light 3x3 mean takes the last of the stair-steps
-        # off the drawing; the printed values and the maximum stay raw.
+        # A banded scale wants real contours: shading a mesh leaves every band
+        # edge stepped along the grid cells. The grid is also resampled finer
+        # first, then smoothed once more, so a band edge is a curve rather than
+        # a run of straight facets one cell long.
         levels, colors, extend = bands
-        ax.contourf(sx, sy, np.ma.masked_invalid(_smooth(sv)), levels=levels, colors=colors,
-                    extend=extend, antialiased=False, zorder=2)
+        k = int(min(5, max(1, round(900.0 / max(sv.shape)))))
+        sm = _smooth(_upsample(_smooth(sv, passes), k), 2 if k > 1 else 0)
+        ax.contourf(_upsample(sx, k), _upsample(sy, k), np.ma.masked_invalid(sm),
+                    levels=levels, colors=colors, extend=extend, antialiased=False, zorder=2)
     else:
+        if not f.get("cats"):
+            sv = _smooth(sv, max(1, passes // 2))
         ax.pcolormesh(sx, sy, np.ma.masked_invalid(sv),
                       cmap=cmap, norm=norm, shading=_shading(f), zorder=2, rasterized=True)
     line = "#2a2f36"

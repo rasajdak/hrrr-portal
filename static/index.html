@@ -76,21 +76,22 @@
   .leaflet-popup-tip{background:#0f1723}
   .leaflet-popup-content{margin:9px 12px;font-size:12.5px} .leaflet-popup-content b{color:var(--accent)}
 
-  /* static map sheet */
-  #share{position:absolute;inset:0;z-index:2000;background:rgba(5,8,12,.78);display:none;
-    align-items:center;justify-content:center;padding:18px}
-  #share.on{display:flex}
-  #sharebox{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;
-    width:min(1100px,100%);max-height:100%;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)}
-  #sharehead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  /* static map view: the default. It sits over the live map, between the bar
+     and the timeline, and the live map is one button away. */
+  #share{position:absolute;left:0;right:0;top:56px;bottom:120px;z-index:1100;background:var(--bg);display:none;
+    flex-direction:column;padding:10px 14px 6px}
+  body.static #share{display:flex}
+  body.static #legend, body.static #meteo, body.static a.credit, body.static #opwrap, body.static #basewrap{display:none}
+  #sharehead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
   #sharehead .sp{flex:1}
   #sharehead a.btn{font-size:12.5px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);
     border-radius:8px;padding:6px 9px;text-decoration:none}
   #sharehead a.btn:hover{border-color:var(--accent)}
-  #shareimgwrap{position:relative;background:#fff;border-radius:8px;overflow:hidden;aspect-ratio:16/10}
-  #shareimg{display:block;width:100%;height:auto}
-  #sharemsg{position:absolute;inset:0;display:grid;place-items:center;font-size:13px;color:#3a4048;background:#f3f1ec}
-  #sharenote{font-size:11px;color:var(--muted);margin-top:8px}
+  #shareimgwrap{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+  #shareimg{display:block;max-width:100%;max-height:100%;border-radius:8px;background:#fff}
+  #shareimg.wait{opacity:.55}
+  #sharemsg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:12.5px;color:var(--ink);
+    background:rgba(19,27,38,.92);border:1px solid var(--line);border-radius:20px;padding:6px 14px;display:none}
 
   @media (max-width:720px){#bar h1{width:100%} #legend{display:none} #lead{font-size:18px} #meteo{width:230px}}
 </style>
@@ -108,7 +109,7 @@
     <label>Field</label>
     <select id="field"></select>
   </div>
-  <div class="group">
+  <div class="group" id="basewrap">
     <label>Basemap</label>
     <select id="basemap">
       <option value="dark">Dark</option>
@@ -121,23 +122,19 @@
     </select>
   </div>
   <div class="group" id="opwrap"><label>Opacity</label><input type="range" id="opacity" min="20" max="100" value="82" /></div>
-  <button id="sharebtn" title="A finished map image you can save or post">Static map</button>
+  <button id="sharebtn" title="Switch between the finished map image and the live, zoomable map">Live map</button>
   <span class="pill" id="runpill">connecting…</span>
 </div>
 
 <div id="share">
-  <div id="sharebox">
-    <div id="sharehead">
-      <div class="group"><label>Region</label><select id="region"></select></div>
-      <span class="sp"></span>
-      <a class="btn" id="sharedl" href="#">Download PNG</a>
-      <button id="sharecopy">Copy share link</button>
-      <a class="btn" id="shareopen" href="#" target="_blank" rel="noopener">Open image</a>
-      <button id="shareclose">Close</button>
-    </div>
-    <div id="shareimgwrap"><img id="shareimg" alt="Static forecast map" /><div id="sharemsg">drawing the map…</div></div>
-    <div id="sharenote">The share link opens a page that shows this exact map, pinned to this run, with a preview image when posted.</div>
+  <div id="sharehead">
+    <div class="group"><label>Region</label><select id="region"></select></div>
+    <span class="sp"></span>
+    <a class="btn" id="sharedl" href="#">Download PNG</a>
+    <button id="sharecopy">Copy share link</button>
+    <a class="btn" id="shareopen" href="#" target="_blank" rel="noopener">Open image</a>
   </div>
+  <div id="shareimgwrap"><img id="shareimg" alt="Static forecast map" /><div id="sharemsg">drawing the map…</div></div>
 </div>
 
 <div id="status"></div>
@@ -242,6 +239,9 @@
   function tileField(k){ return TILE_FIELDS.find(function(x){return x.key===k;}); }
 
   // ---- state ----
+  // The finished map image is the default view; the live Leaflet map is the other.
+  var MODE="static";
+  try{ if(localStorage.getItem("mode")==="live") MODE="live"; }catch(e){}
   var CFG=null, MODEL="hrrr", STEP=1, field="refc", fxx=0, run=null, bounds=null, opacity=0.82;
   var overlay=null;                       // L.imageOverlay for the model field
   var tileLayer=null;                     // L.tileLayer for an Observed layer
@@ -277,6 +277,7 @@
   }
 
   function draw(){
+    if(MODE==="static"){ drawShare(); updateHeader(); return; }
     var url=overlayUrl();
     status("rendering "+field+" F"+pad(fxx)+" …");
     // pre-load into an Image so we can detect success/failure and swap cleanly
@@ -302,6 +303,7 @@
   function setField(k){
     field=k;
     var tf=tileField(k);
+    if(tf) setMode("live",true);        // observed layers only exist on the live map
     if(tf && tf.history) activateRadar(tf);
     else if(tf) activateTile(tf);
     else activateHrrr(k);
@@ -310,7 +312,6 @@
   function activateHrrr(k){
     activeIsTile=false; radarMode=false; clearRadarLayers();
     $("slider").max=CFG.max_fxx; $("slider").step=STEP; $("fmax").textContent=CFG.max_fxx;
-    $("sharebtn").disabled=false;
     if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     var f=CFG.fields.find(function(x){return x.key===k;});
     $("legcustom").classList.remove("on"); $("legimg").style.display="";
@@ -325,7 +326,6 @@
 
   function activateTile(tf){
     stop(); activeIsTile=true; radarMode=false; closeMeteo(); clearRadarLayers();
-    $("sharebtn").disabled=true;
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);  // no HRRR/observed overlap
     if(tileLayer) map.removeLayer(tileLayer);
     tileLayer=L.tileLayer(tf.url(),{opacity:opacity,maxNativeZoom:tf.maxNativeZoom,
@@ -372,7 +372,6 @@
   function clearRadarLayers(){ radarLayers.forEach(function(l){ map.removeLayer(l); }); radarLayers=[]; }
   function activateRadar(tf){
     stop(); activeIsTile=true; radarMode=true; closeMeteo();
-    $("sharebtn").disabled=true;
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);
     if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     clearRadarLayers();
@@ -436,10 +435,11 @@
   // ---- animation ----
   var playing=false,timer=null,playBtn=$("play"),prefetched=false;
   function prefetch(){                 // warm all HRRR frames so the loop is smooth
-    if(prefetched||activeIsTile) return; prefetched=true;
+    // a static sheet is a far heavier draw; its loop waits on each frame instead
+    if(prefetched||activeIsTile||MODE==="static") return; prefetched=true;
     for(var h=(curField().min_fxx||0);h<=CFG.max_fxx;h+=STEP){ var im=new Image(); im.src=overlayUrl(h); }
   }
-  function tick(){ tlNext(); }
+  function tick(){ if(MODE==="static"&&shareBusy) return; tlNext(); }
   function play(){ if(activeIsTile&&!radarMode)return; playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
   function stop(){ playing=false;playBtn.textContent="▶"; clearInterval(timer); }
   playBtn.addEventListener("click",function(){ playing?stop():play(); });
@@ -519,32 +519,48 @@
   // called from draw() when the forecast hour changes — just move the cursor
   function updateMeteoCursor(){ if(series) drawMeteo(); }
 
-  // ---- static map sheet ----
-  var REGION="conus";
+  // ---- static map view ----
+  var REGION="conus", shareBusy=false, shareTok=0;
   try{ REGION=localStorage.getItem("region")||"conus"; }catch(e){}
   function mapQuery(){
     return "model="+MODEL+"&field="+encodeURIComponent(field)+"&run="+run+"&fxx="+fxx+"&region="+REGION;
   }
   function drawShare(){
-    var q=mapQuery(), img=$("shareimg"), msg=$("sharemsg");
-    msg.textContent="drawing the map…"; msg.style.display="grid";
-    $("sharedl").href="/api/map?"+q+"&dl=1";
-    $("shareopen").href="/api/map?"+q;
-    img.onload=function(){ msg.style.display="none"; };
-    img.onerror=function(){
-      fetch("/api/map?"+q).then(function(r){return r.json();}).then(function(j){
+    var q=mapQuery(), url="/api/map?"+q+"&rv="+CFG.render_rev, img=$("shareimg"), msg=$("sharemsg"), tok=++shareTok;
+    shareBusy=true; status(null);
+    msg.textContent="drawing the map…"; msg.style.display="block"; img.classList.add("wait");
+    $("sharedl").href=url+"&dl=1";
+    $("shareopen").href=url;
+    // load off-screen and swap, so the last frame stays up until the next is ready
+    var pre=new Image();
+    pre.onload=function(){ if(tok!==shareTok) return; img.src=url; img.classList.remove("wait"); msg.style.display="none"; shareBusy=false; };
+    pre.onerror=function(){
+      if(tok!==shareTok) return; shareBusy=false;
+      fetch(url).then(function(r){return r.json();}).then(function(j){
         msg.textContent=(j&&j.error)?j.error:"the map could not be drawn";
       }).catch(function(){ msg.textContent="the map could not be drawn"; });
     };
-    img.src="/api/map?"+q;
+    pre.src=url;
   }
-  $("sharebtn").addEventListener("click",function(){
-    if(activeIsTile||!CFG) return;
-    stop(); $("share").classList.add("on"); drawShare();
-  });
-  function closeShare(){ $("share").classList.remove("on"); }
-  $("shareclose").addEventListener("click",closeShare);
-  $("share").addEventListener("click",function(e){ if(e.target===$("share")) closeShare(); });
+  function fitShare(){              // the bar wraps on a narrow screen
+    $("share").style.top=$("bar").offsetHeight+"px";
+    $("share").style.bottom=($("timeline").offsetHeight+22)+"px";
+  }
+  window.addEventListener("resize",fitShare);
+  function setMode(m, quiet){
+    if(MODE===m) return;
+    MODE=m; stop();
+    try{ localStorage.setItem("mode",m); }catch(e){}
+    document.body.classList.toggle("static",m==="static");
+    $("sharebtn").textContent=(m==="static")?"Live map":"Static map";
+    if(m==="static"){ closeMeteo(); fitShare(); }
+    else map.invalidateSize();
+    if(quiet||!CFG) return;
+    // a static sheet needs a model field; coming back from an observed layer, pick one
+    if(m==="static"&&tileField(field)){ field="refc"; $("field").value=field; }
+    setField(field);
+  }
+  $("sharebtn").addEventListener("click",function(){ setMode(MODE==="static"?"live":"static"); });
   $("region").addEventListener("change",function(e){
     REGION=e.target.value;
     try{ localStorage.setItem("region",REGION); }catch(err){}
@@ -590,7 +606,7 @@
       var og2=document.createElement("optgroup"); og2.label="Observed";
       TILE_FIELDS.forEach(function(f){ var o=document.createElement("option"); o.value=f.key; o.textContent=f.label; og2.appendChild(o); });
       sel.appendChild(og2);
-      buildTicks();
+      buildTicks(); fitShare();
       // keep the field across a model switch when the new model carries it
       var keep=tileField(field)||cfg.fields.some(function(f){return f.key===field;});
       if(!keep) field="refc";
@@ -603,6 +619,9 @@
     loadModel(e.target.value,false).catch(function(){ status("⚠ could not load that model",true); });
   });
 
+  document.body.classList.toggle("static",MODE==="static");
+  $("sharebtn").textContent=(MODE==="static")?"Live map":"Static map";
+  fitShare();
   status("loading configuration…");
   loadModel("hrrr",true).catch(function(){
     status("⚠ cannot reach backend. Start it with:  python app.py",true);

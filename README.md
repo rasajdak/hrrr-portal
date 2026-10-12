@@ -73,8 +73,11 @@ Two things the files do not hand over directly:
 `/api/map` draws a finished 2400 x 1500 picture in a Lambert conformal fitted to
 one of 13 regions (`REGIONS`): land and water, state, county and national borders, a
 title with the valid time in the region's own time zone, the value at each city that fits, the maximum
-in view and a colorbar. The **Static map** button on the page opens it with a
-region picker, a download button and a share link. `/share` wraps the same image
+in view and a colorbar. Fields are smoothed by a Gaussian sized in sheet pixels
+(about 9 px), and banded ones are resampled finer and contoured, so nothing shows
+the grid; the printed values stay raw. This is the page's **default view**, with
+a region picker, a download button and a share link; the **Live map** button
+switches to the zoomable Leaflet map (and the choice is remembered). `/share` wraps the same image
 in a page with Open Graph tags, pinned to the run, so a posted link shows the
 map itself.
 
