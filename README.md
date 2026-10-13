@@ -207,6 +207,27 @@ commit as the droplet, since cache names include the render revision. Once it
 is keeping up, the droplet's own timer can be left on as a fallback (it skips
 what exists) or switched to `prewarm.py --prune-only`.
 
+### Serving from the drawing machine
+Copying 40 GB of maps a day to a 48 GB droplet filled it (2026-10-13), so the
+drawing Mac now serves the site as well. The droplet keeps the name, the
+certificate and its own copy of the app; the Mac holds an ssh connection open
+that makes its app appear on the droplet's port 8001, and nginx prefers that
+port and falls back to the droplet's own app when it is dead
+(`deploy/nginx.conf`). Nothing at home is opened to the internet.
+
+```bash
+~/.local/bin/micromamba install -p ~/hrrr-env -c conda-forge gunicorn
+HRRR_PYTHON=~/hrrr-env/bin/python bash deploy/mac/serve.sh
+SERVER=none HRRR_PYTHON=~/hrrr-env/bin/python bash deploy/mac/setup.sh   # draw, copy nothing up
+```
+
+`serve.sh` prints the key line for `/home/mapsync/.ssh/authorized_keys`; that
+key can only carry port 8001 back. Every response says who answered in
+`X-Served-By` (`127.0.0.1:8001` is the Mac). `/api/purpleair`, `/api/panel`
+and the air-quality tiles always stay on the droplet. While the Mac answers,
+the droplet's timer only prunes. Saved maps live on whichever machine took the
+save, so the `/saved` shelf is the Mac's while it is up.
+
 ## Endpoints
 | route | purpose |
 |-------|---------|

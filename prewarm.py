@@ -172,6 +172,15 @@ def prune():
         over -= size
 
 
+def served_elsewhere(url="http://127.0.0.1:8001/"):
+    """True when the app on the drawing machine answers down its ssh tunnel."""
+    import urllib.request
+    try:
+        return urllib.request.urlopen(url, timeout=5).status == 200
+    except Exception:
+        return False
+
+
 def push(dest, key):
     """
     Send the maps not yet sent to the web server, as a tar stream over ssh.
@@ -254,6 +263,11 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
                         if n.startswith(".in.")]          # a delivery still arriving
     if want is LEAN and any(os.path.exists(p) and time.time() - os.path.getmtime(p) < 1800 for p in stamps):
         print("another machine is drawing: pruned only")
+        return
+    # The same when the drawing machine serves the site itself (deploy/mac/
+    # serve.sh): its maps never come here, but its app answers on this port.
+    if want is LEAN and served_elsewhere():
+        print("another machine is serving: pruned only")
         return
     start, drawn, missing = time.time(), 0, set()
     # A region's loop layers (land and relief, then roads and names) are slow to

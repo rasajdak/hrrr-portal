@@ -10,6 +10,8 @@
 # launchd job. Undo with:   bash deploy/mac/setup.sh --remove
 set -euo pipefail
 
+# SERVER=none draws without copying anything up: for a Mac that serves the
+# site itself (serve.sh), where the maps are already where they are needed.
 SERVER="${SERVER:-mapsync@104.248.236.49}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 LABEL="com.ryansajdak.hrrr-prewarm"
@@ -56,6 +58,12 @@ if [ ! -f "$KEY" ]; then
     ssh-keygen -q -t ed25519 -N "" -C "hrrr-prewarm@$(scutil --get ComputerName 2>/dev/null || hostname)" -f "$KEY"
 fi
 
+PUSH=""
+if [ "$SERVER" != "none" ]; then
+    PUSH="    <string>--push</string><string>$SERVER</string>
+    <string>--key</string><string>$KEY</string>"
+fi
+
 # ---- the launchd job: one pass every 10 minutes, low priority ----
 mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
 cat > "$PLIST" <<PLIST_EOF
@@ -68,8 +76,7 @@ cat > "$PLIST" <<PLIST_EOF
 $(printf '    <string>%s</string>\n' "${RUN[@]}")
     <string>prewarm.py</string>
     <string>--workers</string><string>$WORKERS</string>
-    <string>--push</string><string>$SERVER</string>
-    <string>--key</string><string>$KEY</string>
+$PUSH
   </array>
   <key>StartInterval</key><integer>600</integer>
   <key>RunAtLoad</key><true/>
@@ -85,6 +92,11 @@ PLIST_EOF
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
+if [ "$SERVER" = "none" ]; then
+    echo "Drawing is set up: $WORKERS processes, a pass every 10 minutes, nothing copied up."
+    echo "Log:  tail -f \"$LOG\""
+    exit 0
+fi
 cat <<DONE
 
 Drawing is set up: $WORKERS processes, a pass every 10 minutes.
