@@ -39,8 +39,8 @@ import loop
 #         every frame there (17,900 a day at 3.4 s a map) was more than it has.
 #   WIDE  the drawing Mac (six workers): every HRRR hour, GFS and ECMWF out the
 #         full ten days, more total hours, and the Great Lakes. About 19,700
-#         maps a day, which is also about what the droplet's disk can hold for
-#         the 18 hours frames are kept.
+#         maps a day in the plan, but it has delivered 40 GB in 18 hours, more
+#         than the droplet's disk: see CACHE_SHARE below.
 #
 # A pass run with four or more workers takes the wide plan (or pass --wide).
 # In each plan:
@@ -82,7 +82,13 @@ BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
 # a day (a temperature map is over 2 MB), and the longest any run stays current
 # is ECMWF's 12 hours.
 KEEP_PNG = 18 * 3600
+# The frames may also fill no more than this share of the disk they sit on, and
+# the oldest go first once they do. Age alone let the wide plan fill the
+# droplet's 48 GB overnight, which stopped deliveries, drawing and this prune
+# all at once. On the drawing Mac's disk the share is never reached.
+CACHE_SHARE = 0.55
 MIN_FREE_GB = 6          # below this, prune only and draw nothing
+PUSH_BATCH = 2000        # maps in one delivery, newest first: a backlog goes over in pieces
 
 
 def groups(want=LEAN):
@@ -141,16 +147,29 @@ def draw(group):
 
 
 def prune():
-    now = time.time()
+    now, frames = time.time(), []
     for name in os.listdir(hr.CACHE_DIR):
         keep = KEEP_PNG if name.endswith(".png") else 3600 if name.endswith(".part") else None
         if keep:
             path = os.path.join(hr.CACHE_DIR, name)
             try:
-                if now - os.path.getmtime(path) > keep:
+                st = os.stat(path)
+                if now - st.st_mtime > keep:
                     os.remove(path)
+                elif name.endswith(".png"):
+                    frames.append((st.st_mtime, st.st_size, path))
             except OSError:
                 pass
+    # then by size: oldest frames first until what is left fits its share
+    over = sum(f[1] for f in frames) - CACHE_SHARE * shutil.disk_usage(hr.CACHE_DIR).total
+    for _, size, path in sorted(frames):
+        if over <= 0:
+            break
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        over -= size
 
 
 def push(dest, key):
@@ -182,7 +201,14 @@ def push(dest, key):
             longest[stem] = max(longest.get(stem, ""), n)
     have |= set(longest.values())
     sent = set(open(sent_path).read().split()) if os.path.exists(sent_path) else set()
-    todo = sorted(have - sent)
+    def drawn_at(n):
+        try:
+            return os.path.getmtime(os.path.join(hr.CACHE_DIR, n))
+        except OSError:
+            return 0
+    # newest first and a batch at a time: after an outage the backlog is tens
+    # of GB, and sent whole it would fill the server it is catching up
+    todo = sorted(have - sent, key=drawn_at, reverse=True)[:PUSH_BATCH]
     if not todo:
         return 0
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "IdentitiesOnly=yes"]

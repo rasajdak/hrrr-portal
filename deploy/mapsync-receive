@@ -7,6 +7,13 @@
 #   command="/usr/local/bin/mapsync-receive",restrict ssh-ed25519 AAAA... name
 set -eu
 CACHE=/opt/hrrr-portal/cache
+# A full disk stops the site drawing anything at all, so a delivery that would
+# run it close is turned away; the sender keeps the maps and tries again.
+free=$(df -Pk "$CACHE" | awk 'NR==2 {print $4}')
+if [ "$free" -lt 5000000 ]; then
+    echo "only $((free / 1000000)) GB free on the server: delivery refused" >&2
+    exit 1
+fi
 d=$(mktemp -d "$CACHE/.in.XXXXXX")
 trap 'rm -rf "$d"' EXIT
 # A delivery can take longer than the half hour the server waits before it
