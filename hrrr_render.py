@@ -1421,12 +1421,23 @@ def _upsample(a, k):
             + top[:, x0 + 1] * (1 - fy) * fx + bot[:, x0 + 1] * fy * fx)
 
 
+@functools.lru_cache(maxsize=512)
+def _ymdh(run_dt):
+    """
+    A run as YYYYMMDDHH. Kept, because the run picker asks for the path of
+    every map a run could have (170,000 of them), and in a server worker on
+    macOS each strftime costs 0.15 ms: a forked process there re-reads the
+    time zone on every call. That made /api/runs take 30 s on the Mac.
+    """
+    return run_dt.strftime("%Y%m%d%H")
+
+
 def map_path(model, field_key, run_dt, fxx, region, shape="wide"):
     """Where a static map lives in the cache, drawn or not."""
     # a field can carry its own `rev`, so a change to how one field is drawn
     # does not throw away every other map on disk
     return _cache_path("map", MAP_REV, model, field_key + FIELDS[field_key].get("rev", ""),
-                       run_dt.strftime("%Y%m%d%H"),
+                       _ymdh(run_dt),
                        "%03d" % fxx, region + SHAPES[shape]["key"] + ("" if shape == "wide" else "+t3"))
 
 

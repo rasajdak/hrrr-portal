@@ -63,6 +63,8 @@ cat > "$AGENTS/$WEB.plist" <<PLIST_EOF
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- someone is waiting on this one: keep macOS from treating it as a chore -->
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>$LOGS/hrrr-web.log</string>
   <key>StandardErrorPath</key><string>$LOGS/hrrr-web.log</string>
 </dict></plist>
