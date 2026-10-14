@@ -70,6 +70,8 @@ WIDE = dict(
     areas=["wny", "newyork", "northeast", "greatlakes", "conus"],
     loop_areas=["wny", "newyork", "northeast", "greatlakes", "conus",
                 "wny@tall", "newyork@tall", "northeast@tall", "greatlakes@tall"],
+    # temperature and gust loops: one download a frame, not six
+    loop_kinds=["radar", "temp", "gust"],
     plan={
         "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=1, to=18, arrive=[18], lake=1),
         "nam":   dict(totals=["apcp_tot", "snow10"], at=[12, 24, 36, 48, 60], loops=MOVING, every=3, to=60, arrive=[36, 60], lake=3),
@@ -113,25 +115,26 @@ def groups(want=LEAN):
         for fxx in range(0, p["to"] + 1, p["lake"]):
             todo = [r for r in LAKE_AREAS if not os.path.exists(hr.map_path(model, "lake_effect", run, fxx, r))]
             yield model, run, "lake_effect", fxx, todo
-        # then that model's loop, one group per forecast time
+        # then that model's loop, one group per forecast time and kind
         lrun = loop.latest_run(model)
-        for m in loop.minutes(model):
-            todo = [r for r in LOOP_AREAS if not os.path.exists(loop.frame_path(model, lrun, m, r))]
-            yield model, lrun, "loop", m, todo
+        for kind in want.get("loop_kinds", ["radar"]):
+            for m in loop.minutes(model):
+                todo = [r for r in LOOP_AREAS if not os.path.exists(loop.frame_path(model, lrun, m, r, kind))]
+                yield model, lrun, "loop" if kind == "radar" else "loop:" + kind, m, todo
 
 
 def draw(group):
     """Draw one group. Returns (maps drawn, the (model, hour) if not posted yet)."""
     model, run, field, fxx, regions = group
     drawn = 0
-    if field == "loop":
+    if field.startswith("loop"):
         try:
-            loop.frames(model, run, fxx, regions)
+            loop.frames(model, run, fxx, regions, kind=field.partition(":")[2] or "radar")
             return len(regions), None
         except RuntimeError as e:
             return 0, ((model, "loop") if "not posted" in str(e) else None)
         except Exception as e:
-            print("skip %s loop %d min: %s" % (model, fxx, e), flush=True)
+            print("skip %s %s %d min: %s" % (model, field, fxx, e), flush=True)
             return 0, None
     for region in regions:
         try:
@@ -325,7 +328,8 @@ if __name__ == "__main__":
     if "--list" in sys.argv:
         n = [0, 0]
         for g in groups(want):
-            n[g[2] == "loop"] += len(want["loop_areas"] if g[2] == "loop" else want["areas"])
+            lp = g[2].startswith("loop")
+            n[lp] += len(want["loop_areas"] if lp else want["areas"])
         print(n[0], "maps and", n[1], "loop frames per full set of runs",
               "(wide plan)" if want is WIDE else "(lean plan)")
     else:

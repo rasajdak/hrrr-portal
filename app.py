@@ -11,8 +11,8 @@ Endpoints
   POST /api/save              -> keep one static map for good, under /saved/
   GET /saved                  -> the kept maps, newest first
   GET /loop                   -> the animated futurecast page
-  GET /api/loop               -> its run, frame times and layers (query: model, region, run)
-  GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m)
+  GET /api/loop               -> its run, frame times and layers (query: model, region, run, kind)
+  GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m; kind radar|temp|gust)
   GET /api/loop/base          -> a region's base or label layer (query: region, layer)
   GET /share                  -> a page around one static map, for posting a link
   GET /api/legend?field=...   -> colorbar PNG for a field
@@ -187,7 +187,8 @@ def loop_meta():
         model = request.args.get("model", "hrrr")
         asked = request.args.get("run")
         return jsonify(loop.meta(model, request.args.get("region", "wny"),
-                                 _parse_run(asked, model) if asked else None))
+                                 _parse_run(asked, model) if asked else None,
+                                 request.args.get("kind", "radar")))
     except ValueError as e:
         return jsonify(error=str(e)), 400
 
@@ -201,7 +202,8 @@ def loop_frame():
         region = request.args.get("region", "wny")
         hr.region_parts(region)                 # 'name' or 'name@tall', else ValueError
         run = _parse_run(request.args.get("run"), model) if request.args.get("run") else loop.latest_run(model)
-        path = loop.frame_png(model, run, int(request.args.get("m", "0")), region)
+        path = loop.frame_png(model, run, int(request.args.get("m", "0")), region,
+                              request.args.get("kind", "radar"))
     except ValueError as e:
         return jsonify(error=str(e)), 400
     except Exception as e:

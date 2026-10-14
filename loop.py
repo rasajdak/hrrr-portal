@@ -10,8 +10,10 @@ frame the static maps use, so everything registers):
   base   the land, water and shaded terrain, as a picture         (once a region)
   top    roads, borders, counties and place names, transparent    (once a region)
   frame  the weather at one forecast time, as data in a PNG:
-         red = rain, green = wintry mix, blue = snow, each the echo strength
-         (0..75 dBZ on 0..255) where that type owns the spot      (one per time)
+         radar: red = rain, green = wintry mix, blue = snow, each the echo
+         strength (0..75 dBZ on 0..255) where that type owns the spot;
+         temperature and gusts: one number in red, on the kind's own
+         scale (KINDS)                                           (one per time)
 
   flow   how the weather moves between one time and the next, as a
          small field of displacements                            (one per pair)
@@ -65,6 +67,37 @@ LOOPS = {
 }
 
 
+# What the loop can show. Radar is three numbers a pixel (rain, mix, snow) and
+# travels along its own motion. The others are one number, coded into red
+# between lo and hi, and blended in place: temperature and wind change where
+# they are as much as they move, and a smooth field cross-fades without the
+# twinkle a field of separate echoes gets. `stops` is the colour scale the
+# shader reads (value, colour); `clear` fades the bottom of the scale out so
+# calm air does not tint the whole map; `ticks` are the numbers on the legend.
+KINDS = {
+    "radar": dict(label="Radar", title="Futurecast radar"),
+    "temp": dict(label="Temperature", title="Futurecast temperature", field="t2m", unit="°F",
+                 lo=-30.0, hi=120.0, alpha=0.62, clear=None,
+                 ticks=[-20, 0, 20, 32, 50, 70, 90, 110],
+                 stops=[(-30, "#f1defa"), (-15, "#c39be0"), (0, "#8763c7"), (10, "#4f63c9"),
+                        (20, "#3f8fde"), (31, "#9fd6f2"), (33, "#bfe5a6"), (42, "#79c66b"),
+                        (52, "#c3dc56"), (62, "#f3d64a"), (72, "#f6a83e"), (82, "#ec6a35"),
+                        (92, "#cf2f33"), (102, "#9a1640"), (120, "#5a0d3c")]),
+    "gust": dict(label="Wind gusts", title="Futurecast wind gusts", field="gust", unit="mph",
+                 lo=0.0, hi=127.5, alpha=0.82, clear=(12.0, 24.0),
+                 ticks=[20, 30, 40, 50, 60, 70, 80, 100],
+                 stops=[(0, "#d6ecf5"), (15, "#d6ecf5"), (25, "#8fcbe9"), (35, "#4d9ad6"),
+                        (45, "#5a6bc8"), (55, "#8b4fbe"), (65, "#c23ea0"), (75, "#e8457a"),
+                        (90, "#f68a4b"), (110, "#fde07a"), (127.5, "#fff6c9")]),
+}
+
+
+def _kind(kind):
+    if kind not in KINDS:
+        raise ValueError("the loop shows %s" % ", ".join(KINDS))
+    return kind
+
+
 def _path(*parts):
     return os.path.join(hr.CACHE_DIR, "loop_%s_%s.png" % (REV, "_".join(str(p) for p in parts)))
 
@@ -115,6 +148,28 @@ def _fields(model, run_dt, m):
     kind, lat, lon = hr._fetch(hr.spec("ptype", model), model, run_dt, fxx)
     t2m = hr._one(model, url, hr.spec("t2m", model)["search"])[0][0]
     return dbz, kind, t2m, lat, lon
+
+
+def _scalar(model, run_dt, m, kind):
+    """(values in the kind's units, lat, lon) at m minutes into the run."""
+    k = KINDS[kind]
+    f = hr.spec(k["field"], model)
+    if model == "hrrr":
+        url = hr._grib_url("hrrr", "subh", run_dt, int(math.ceil(m / 60.0)))
+        when = "anl:" if m == 0 else "%d min fcst:" % m
+        arrs, lat, lon = hr._one(model, url, f["search"].rstrip(":") + ":" + when)
+        data = arrs[0]
+    else:
+        try:
+            data, lat, lon = hr._fetch(f, model, run_dt, m // 60)
+        except Exception:
+            # A gust is the strongest since the last output, so some models
+            # have none at the very start: the wind there will do.
+            if kind != "gust" or m:
+                raise
+            f = hr.spec("wind10m", model)
+            data, lat, lon = hr._fetch(f, model, run_dt, 0)
+    return f["conv"](data) if f.get("conv") else data, lat, lon
 
 
 # ---------------------------------------------------------------- regrid ---
@@ -171,13 +226,17 @@ def _sample(a, i, j):
     return np.where(ok, out, 0.0)
 
 
-def frames(model, run_dt, m, regions, flows=True):
+def frames(model, run_dt, m, regions, flows=True, kind="radar"):
     """
     Draw the data frame at m minutes for each region, skipping any on disk.
     One call per time covers every region, because the six downloads behind a
     frame are the cost and they are the same for all of them.
     """
-    todo = [r for r in regions if not os.path.exists(frame_path(model, run_dt, m, r))]
+    todo = [r for r in regions if not os.path.exists(frame_path(model, run_dt, m, r, kind))]
+    if kind != "radar":
+        if todo:
+            _scalar_frames(model, run_dt, m, todo, kind)
+        return
     if not todo:
         return _pair_up(model, run_dt, m, regions) if flows else None
     from PIL import Image
@@ -201,6 +260,28 @@ def frames(model, run_dt, m, regions, flows=True):
         os.replace(tmp, path)
     if flows:
         _pair_up(model, run_dt, m, regions)
+
+
+def _scalar_frames(model, run_dt, m, regions, kind):
+    from PIL import Image
+    k = KINDS[kind]
+    data, lat, lon = _scalar(model, run_dt, m, kind)
+    data = np.where(np.isfinite(data), data, k["lo"]).astype("float32")
+    for region in regions:
+        i, j = _index(model, region, lat, lon)
+        cell = abs(float(i[0, 0] - i[-1, 0])) / i.shape[0]
+        passes = 2 if cell > 0.5 else int(min(10, round(1.5 / max(cell, 0.05))))
+        # off the grid reads as the bottom of the scale (clear, for gusts)
+        ok = (i >= 0) & (i <= lat.shape[0] - 1) & (j >= 0) & (j <= lat.shape[1] - 1)
+        v = np.where(ok, _sample(data, i, j), k["lo"])
+        v = hr._smooth(v, passes)
+        r = np.clip(np.round((v - k["lo"]) / (k["hi"] - k["lo"]) * 255.0), 0, 255).astype("uint8")
+        rgb = np.zeros(r.shape + (3,), dtype="uint8")
+        rgb[..., 0] = r
+        path = frame_path(model, run_dt, m, region, kind)
+        tmp = hr.part_name(path)
+        Image.fromarray(rgb, "RGB").save(tmp, format="PNG", optimize=True)
+        os.replace(tmp, path)
 
 
 def _pair_up(model, run_dt, m, regions):
@@ -313,16 +394,19 @@ def flow_png(model, run_dt, m, region):
     return path
 
 
-def frame_path(model, run_dt, m, region):
-    return _path(model, run_dt.strftime("%Y%m%d%H"), "%04d" % m, region + _tag(region))
+def frame_path(model, run_dt, m, region, kind="radar"):
+    # radar frames keep the names they had before there were other kinds
+    return _path(model, run_dt.strftime("%Y%m%d%H"), "%04d" % m, region + _tag(region)
+                 + ("" if kind == "radar" else "_" + kind))
 
 
-def frame_png(model, run_dt, m, region):
+def frame_png(model, run_dt, m, region, kind="radar"):
+    _kind(kind)
     if m not in minutes(model):
         raise ValueError("%s frames are every %d minutes out to %d hours" % (
             hr.MODELS[model]["label"], LOOPS[model]["step"], LOOPS[model]["to"] // 60))
-    frames(model, run_dt, m, [region])
-    return frame_path(model, run_dt, m, region)
+    frames(model, run_dt, m, [region], kind=kind)
+    return frame_path(model, run_dt, m, region, kind)
 
 
 # ------------------------------------------------------------ base layers ---
@@ -401,7 +485,7 @@ def base_png(region, layer):
 
 
 # ------------------------------------------------------------------- meta ---
-def recent_runs(model, region, have, count=None):
+def recent_runs(model, region, have, count=None, kind="radar"):
     """
     The newest run whose whole loop is posted and the ones before it, newest
     first, each with how many of its frames are drawn for this region: what the
@@ -414,12 +498,19 @@ def recent_runs(model, region, have, count=None):
     for k in range(count):
         r = latest - timedelta(hours=k * cycle)
         out.append(dict(run=r.strftime("%Y%m%d%H"), iso=r.strftime("%Y-%m-%dT%H:00:00Z"),
-                        ready=sum(os.path.basename(frame_path(model, r, m, region)) in have for m in mins),
+                        ready=sum(os.path.basename(frame_path(model, r, m, region, kind)) in have for m in mins),
                         of=len(mins)))
     return out
 
 
-def meta(model, region, run=None):
+def cities(region):
+    """The places on the label sheet, as fractions across and down the map."""
+    proj, x0, x1, y0, y1 = hr.frame(region)
+    return [dict(name=n, x=(cx - x0) / (x1 - x0), y=(y1 - cy) / (y1 - y0), major=bool(major))
+            for n, cx, cy, major in hr.city_labels(region, limit=18)]
+
+
+def meta(model, region, run=None, kind="radar"):
     """
     Everything the page needs to start: the run, the frame times, the layers.
     `run` (a UTC datetime) picks an earlier run; without it, the newest whose
@@ -427,6 +518,7 @@ def meta(model, region, run=None):
     """
     if model not in LOOPS:
         raise ValueError("no loop for %r" % model)
+    _kind(kind)
     name, tall = hr.region_parts(region)
     BASE_W, BASE_H, FRAME_W, FRAME_H = dims(region)
     newest = latest_run(model)
@@ -435,13 +527,19 @@ def meta(model, region, run=None):
     stamp = run.strftime("%Y%m%d%H")
     mins = minutes(model)
     have = {n for n in os.listdir(hr.CACHE_DIR) if n.startswith("loop_")}
+    k = KINDS[kind]
+    scale = {} if kind == "radar" else dict(
+        unit=k["unit"], lo=k["lo"], hi=k["hi"], alpha=k["alpha"], clear=k["clear"],
+        ticks=k["ticks"], stops=k["stops"], cities=cities(region))
     return dict(
+        kind=kind, kind_label=k["label"], title=k["title"], scale=scale,
+        kinds=[dict(key=key, label=v["label"]) for key, v in KINDS.items()],
         model=model, name=hr.MODELS[model]["name"], credit=hr.credit(model),
         region=region, tall=tall, region_label=hr.REGIONS[name]["label"], tz=hr.REGIONS[name]["tz"],
         run=stamp, run_iso=run.strftime("%Y-%m-%dT%H:00:00Z"),
-        latest_run=newest.strftime("%Y%m%d%H"), runs=recent_runs(model, region, have),
+        latest_run=newest.strftime("%Y%m%d%H"), runs=recent_runs(model, region, have, kind=kind),
         step=LOOPS[model]["step"], minutes=mins,
-        ready=[m for m in mins if os.path.basename(frame_path(model, run, m, region)) in have],
+        ready=[m for m in mins if os.path.basename(frame_path(model, run, m, region, kind)) in have],
         width=BASE_W, height=BASE_H, frame_w=FRAME_W, frame_h=FRAME_H,
         flow_scale=flow_scale(model, region),
         models=[dict(key=k, label=v["label"]) for k, v in LOOPS.items()],
