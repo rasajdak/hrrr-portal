@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Server status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600&display=swap" />
+<style>
+  :root{ --bg:#0b1017; --panel:#131b26; --panel2:#1b2634; --line:#243244; --ink:#e8eef6; --muted:#8ea3bd;
+         --accent:#4ea3ff; --good:#33d69f; --warn:#f0b94e; --bad:#ef5a5a; }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:Barlow,"Helvetica Neue",Helvetica,Arial,sans-serif}
+  #wrap{max-width:980px;margin:0 auto;padding:18px 16px 40px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+  h1{font-family:"Barlow Condensed",Barlow,sans-serif;font-size:26px;font-weight:600;margin:0}
+  header a{color:var(--muted);font-size:14px;text-decoration:none} header a:hover{color:var(--accent)}
+  header .sp{flex:1}
+  #updated{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+  .card h2{font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+  /* the answer to "is it working", first and largest */
+  #verdict{display:flex;align-items:center;gap:16px}
+  #light{width:22px;height:22px;border-radius:50%;flex:none;box-shadow:0 0 0 6px rgba(255,255,255,.04)}
+  #light.good{background:var(--good)} #light.warn{background:var(--warn)} #light.bad{background:var(--bad)}
+  #light.busy{background:var(--accent);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.45}}
+  #headline{font-family:"Barlow Condensed",Barlow,sans-serif;font-size:34px;font-weight:600;line-height:1.05}
+  #subline{color:var(--muted);font-size:15px;margin-top:4px;line-height:1.4}
+  .bar{height:10px;border-radius:6px;background:var(--panel2);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent);border-radius:6px;transition:width .6s}
+  .row{display:flex;justify-content:space-between;gap:12px;font-size:14px;margin-top:8px;color:var(--muted);flex-wrap:wrap}
+  .row b{color:var(--ink);font-weight:600}
+  /* one bar per pass, height = maps drawn */
+  /* a slot for each of the 72 passes kept, newest at the right */
+  #passes{display:flex;align-items:flex-end;justify-content:flex-end;gap:2px;height:90px;margin-top:4px}
+  #passes i{flex:0 0 calc((100% - 142px) / 72);min-width:2px;background:var(--accent);border-radius:2px 2px 0 0;opacity:.85}
+  #passes i.idle{background:#33455c}
+  #passes i.short{background:var(--warn)}
+  #passaxis{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:5px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;font-weight:500;color:var(--muted);font-size:12.5px;padding:0 10px 8px 0;border-bottom:1px solid var(--line)}
+  td{padding:10px 10px 10px 0;border-bottom:1px solid var(--line);vertical-align:top;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  td .name{font-weight:600} td .small{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .pill{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:2px 8px}
+  .pill.good{background:rgba(51,214,159,.14);color:var(--good)} .pill.warn{background:rgba(240,185,78,.14);color:var(--warn)}
+  .pill.bad{background:rgba(239,90,90,.14);color:var(--bad)}
+  .tablewrap{overflow-x:auto}
+  /* a phone: each model becomes its own small block, the column names inline */
+  @media (max-width:640px){
+    thead{display:none}
+    table,tbody,tr,td{display:block;width:100%}
+    tr{padding:10px 0;border-bottom:1px solid var(--line)} tr:last-child{border-bottom:none}
+    td{border:none;padding:3px 0;display:flex;gap:10px}
+    td[data-label]::before{content:attr(data-label);flex:0 0 110px;color:var(--muted);font-size:12.5px;padding-top:1px}
+    td:first-child{flex-direction:row;align-items:baseline;gap:8px;padding-bottom:6px}
+    #wrap{padding:14px 12px 30px}
+    #headline{font-size:28px}
+  }
+  #notes{list-style:none;margin:0;padding:0;font-size:14px}
+  #notes li{padding:8px 0;border-bottom:1px solid var(--line);line-height:1.4}
+  #notes li:last-child{border-bottom:none}
+  #notes .why{color:var(--muted);font-size:13px}
+  .empty{color:var(--muted);font-size:14px}
+  #err{display:none;color:var(--bad);font-size:14px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <h1>Is it working?</h1>
+    <a href="/">Maps</a><a href="/loop">Loop</a>
+    <span class="sp"></span>
+    <span id="updated">loading…</span>
+  </header>
+  <div id="err"></div>
+
+  <div class="card">
+    <div id="verdict"><div id="light"></div><div><div id="headline">Checking…</div><div id="subline"></div></div></div>
+  </div>
+
+  <div class="card" id="passcard">
+    <h2 id="passtitle">This pass</h2>
+    <div class="bar"><i id="passbar" style="width:0"></i></div>
+    <div class="row"><span id="passleft"></span><span id="passright"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>Recent passes</h2>
+    <div id="passes"></div>
+    <div id="passaxis"><span id="axisfrom"></span><span>maps drawn per pass, every 10 minutes</span><span>now</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Models</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Model</th><th>Newest run</th><th>Posted by the model</th><th>Maps drawn</th><th>Loop</th></tr></thead>
+      <tbody id="models"></tbody>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h2>Disk</h2>
+    <div class="bar"><i id="diskbar" style="width:0"></i></div>
+    <div class="row"><span id="diskleft"></span><span id="diskright"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>Skipped in the latest pass</h2>
+    <ul id="notes"></ul>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $=function(id){ return document.getElementById(id); };
+  var ET="America/New_York";
+  function clock(t){ return new Date(t*1000).toLocaleString("en-US",{timeZone:ET,hour:"numeric",minute:"2-digit"}); }
+  function runName(iso){
+    var d=new Date(iso);
+    return d.toLocaleString("en-US",{timeZone:ET,weekday:"short",hour:"numeric",timeZoneName:"short"});
+  }
+  function ago(secs){
+    secs=Math.max(0,Math.round(secs));
+    if(secs<60) return secs+" s ago";
+    if(secs<3600) return Math.round(secs/60)+" min ago";
+    var h=Math.floor(secs/3600), m=Math.round((secs%3600)/60);
+    return h+" h"+(m?" "+m+" min":"")+" ago";
+  }
+  function dur(secs){ secs=Math.round(secs); return secs<60?secs+" s":Math.floor(secs/60)+" min "+(secs%60)+" s"; }
+  function gb(b){ return (b/1e9).toFixed(b<1e10?1:0)+" GB"; }
+  function n(x){ return x.toLocaleString("en-US"); }
+  function el(tag, cls, text){ var e=document.createElement(tag); if(cls) e.className=cls; if(text!==undefined) e.textContent=text; return e; }
+  var FIELD={refc:"radar",refc_ptype:"radar by precip type",ptype:"precip type",t2m:"temperature",gust:"gusts",
+             apcp_tot:"total precip",asnow:"total snow",snow10:"total snow",arrival:"arrival time",lake_effect:"lake effect",
+             loop:"loop radar","loop:temp":"loop temperature","loop:gust":"loop gusts"};
+  function fieldName(f){ return FIELD[f]||f; }
+
+  function show(s){
+    var now=s.now, p=s.prewarm, last=p&&p.history&&p.history.length?p.history[p.history.length-1]:null;
+    var endAt=p&&p.finished, since=endAt?now-endAt:null;
+
+    // ---- the verdict ----
+    var light="good", head, sub;
+    if(s.running&&p&&p.state==="drawing"){
+      light="busy"; head="Working: drawing now";
+      sub="Started "+clock(p.started)+", "+n(p.drawn)+" maps so far.";
+    } else if(s.running){
+      light="busy"; head="Working: starting a pass";
+      sub=p?p.state:"";
+    } else if(!p){
+      light="bad"; head="No record of any drawing";
+      sub="The background drawing has not written down a pass on this machine yet.";
+    } else if(since>40*60){
+      light="bad"; head="Drawing has stopped";
+      sub="The last pass ended "+ago(since)+". It should run every 10 minutes.";
+    } else if(/^stood down/.test(p.state)){
+      light="warn"; head="This machine is standing by";
+      sub="Its last pass "+p.state.replace(/^stood down: /,"stood down because ")+" ("+ago(since)+").";
+    } else if(p.state==="low disk"){
+      light="bad"; head="Disk too full to draw";
+      sub="The last pass drew nothing: not enough free space ("+ago(since)+").";
+    } else {
+      head="Working";
+      sub="Last pass ended "+ago(since)+" and drew "+n(p.drawn)+" maps"+(p.drawn?"":" (everything planned was already drawn)")+".";
+    }
+    sub+=" Answering: "+s.machine+" ("+s.host+").";
+    $("light").className=light; $("headline").textContent=head; $("subline").textContent=sub;
+
+    // ---- this pass, or the last one ----
+    if(p){
+      var live=s.running&&p.state==="drawing", frac=p.groups?Math.min(1,p.done/p.groups):(live?0:1);
+      $("passtitle").textContent=live?"This pass":"Last pass";
+      $("passbar").style.width=(100*frac).toFixed(1)+"%";
+      var cur=p.current?(" · now: "+p.current.model.toUpperCase()+" "+fieldName(p.current.field)+
+              (/^loop/.test(p.current.field)?" at "+p.current.fxx+" min":" F"+p.current.fxx)):"";
+      $("passleft").innerHTML="";
+      $("passleft").appendChild(el("b",null,n(p.done)+" of "+n(p.groups)));
+      $("passleft").appendChild(document.createTextNode(" jobs done"+(live?cur:"")));
+      $("passright").textContent=(live?"running "+dur(now-p.started):(p.finished?dur(p.finished-p.started)+", "+p.state:p.state))+
+        " · "+p.plan+" plan, "+p.workers+" worker"+(p.workers===1?"":"s");
+    } else {
+      $("passtitle").textContent="Last pass"; $("passleft").textContent="nothing recorded yet"; $("passright").textContent="";
+    }
+
+    // ---- recent passes ----
+    var hist=(p&&p.history)||[], box=$("passes"); box.innerHTML="";
+    var top=Math.max(10,Math.max.apply(null,hist.map(function(h){ return h.drawn; }).concat([0])));
+    hist.forEach(function(h){
+      var i=el("i", h.drawn===0?"idle":(/out of time/.test(h.state)?"short":""));
+      i.style.height=Math.max(3,Math.round(86*h.drawn/top))+"px";
+      i.title=clock(h.t)+": "+n(h.drawn)+" maps in "+dur(h.secs)+(h.skips?", "+h.skips+" skipped":"")+" ("+h.state+")";
+      box.appendChild(i);
+    });
+    $("axisfrom").textContent=hist.length?clock(hist[0].t):"";
+    if(!hist.length) box.appendChild(el("span","empty","No passes recorded yet."));
+
+    // ---- models ----
+    var tb=$("models"); tb.innerHTML="";
+    s.models.forEach(function(m){
+      var tr=el("tr");
+      var c=el("td"); c.appendChild(el("div","name",m.label)); c.appendChild(el("div","small",m.name)); tr.appendChild(c);
+      if(m.error){ var e=el("td","",m.error); e.colSpan=4; tr.appendChild(e); tb.appendChild(tr); return; }
+      var r=m.runs[0];
+      c=el("td"); c.dataset.label="Newest run"; c.appendChild(el("div","",runName(r.iso)+" · out "+r.max_fxx+" h")); tr.appendChild(c);
+      c=el("td"); c.dataset.label="Posted";
+      var full=m.posted>=r.max_fxx;
+      c.appendChild(el("span","pill "+(full?"good":"warn"), full?"all "+r.max_fxx+" h":"through F"+Math.max(0,m.posted)));
+      tr.appendChild(c);
+      c=el("td"); c.dataset.label="Maps drawn";
+      var mw=el("div");
+      mw.appendChild(el("div","",n(r.maps)+" on this run"));
+      mw.appendChild(el("div","small",m.runs.slice(1).map(function(x){ return n(x.maps)+" on "+runName(x.iso).replace(/ [A-Z]{3}$/,""); }).join(" · ")));
+      c.appendChild(mw); tr.appendChild(c);
+      c=el("td"); c.dataset.label="Loop";
+      if(m.loop){
+        var lf=m.loop.frames, lt=m.loop.times;
+        var lw=el("div"); lw.appendChild(el("div","",n(lf)+" frames"));
+        lw.appendChild(el("div","small",runName(m.loop.iso)+" run, "+lt+" times")); c.appendChild(lw);
+      } else c.appendChild(el("span","small","no loop"));
+      tr.appendChild(c);
+      tb.appendChild(tr);
+    });
+
+    // ---- disk ----
+    var d=s.disk, used=d.used/d.total;
+    $("diskbar").style.width=(100*used).toFixed(1)+"%";
+    $("diskbar").style.background=used>0.9?"var(--bad)":used>0.75?"var(--warn)":"var(--accent)";
+    $("diskleft").innerHTML=""; $("diskleft").appendChild(el("b",null,gb(d.free)+" free"));
+    $("diskleft").appendChild(document.createTextNode(" of "+gb(d.total)));
+    $("diskright").textContent="maps cache: "+gb(d.cache_bytes)+" in "+n(d.cache_files)+" files";
+
+    // ---- skips, grouped: one line per model, field and reason ----
+    var ul=$("notes"); ul.innerHTML="";
+    var groups={}, order=[];
+    ((p&&p.notes)||[]).forEach(function(x){
+      var k=x.model+"|"+x.field+"|"+x.error;
+      if(!groups[k]){ groups[k]={x:x,hours:[],regions:{}}; order.push(k); }
+      var g=groups[k]; if(g.hours.indexOf(x.fxx)<0) g.hours.push(x.fxx); if(x.region) g.regions[x.region]=1;
+    });
+    order.forEach(function(k){
+      var g=groups[k], li=el("li");
+      var loopy=/^loop/.test(g.x.field);
+      li.appendChild(el("div","",g.x.model.toUpperCase()+" "+fieldName(g.x.field)+", "+
+        (loopy?g.hours.map(function(h){ return h+" min"; }):g.hours.map(function(h){ return "F"+h; })).join(", ")+
+        (Object.keys(g.regions).length?" ("+Object.keys(g.regions).length+" region"+(Object.keys(g.regions).length===1?"":"s")+")":"")));
+      li.appendChild(el("div","why",g.x.error));
+      ul.appendChild(li);
+    });
+    if(!order.length) ul.appendChild(el("li","empty","Nothing skipped."));
+    if(p&&p.note_count>p.notes.length) ul.appendChild(el("li","empty","…and "+(p.note_count-p.notes.length)+" more earlier in the pass."));
+
+    $("updated").textContent="updated "+clock(now)+" ET · refreshes every 30 s";
+  }
+
+  function load(){
+    fetch("/api/status",{cache:"no-store"}).then(function(r){ return r.json(); }).then(function(s){
+      $("err").style.display="none"; show(s);
+    }).catch(function(e){
+      $("err").style.display="block"; $("err").textContent="Could not reach the server: "+(e.message||e);
+      $("light").className="bad"; $("headline").textContent="Server not answering";
+    });
+  }
+  load(); setInterval(load,30000);
+})();
+</script>
+</body>
+</html>

@@ -11,6 +11,8 @@ Endpoints
   POST /api/save              -> keep one static map for good, under /saved/
   GET /saved                  -> the kept maps, newest first
   GET /api/posted             -> the last forecast hour of a run the model has posted (query: model, run)
+  GET /status                 -> is it working: what the server and the background drawing are doing
+  GET /api/status             -> the same, as JSON
   GET /loop                   -> the animated futurecast page
   GET /api/loop               -> its run, frame times and layers (query: model, region, run, kind)
   GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m; kind radar|temp|gust)
@@ -23,9 +25,14 @@ Endpoints
 Run:  python app.py           (dev server on http://127.0.0.1:8000)
 """
 
+import fcntl
+import json
 import os
 import re
 import shutil
+import socket
+import sys
+import time
 import traceback
 import urllib.error
 import urllib.request
@@ -175,6 +182,85 @@ def _map_args():
     run = _parse_run(request.args.get("run"), model)
     fxx = int(request.args.get("fxx", "0"))
     return model, field, run, fxx, region
+
+
+@app.route("/status")
+def status_page():
+    return send_from_directory(app.static_folder, "status.html")
+
+
+_STATUS = [0.0, None]           # (when worked out, the answer): the cache walk is not free
+
+
+@app.route("/api/status")
+def status():
+    """
+    What this server and its background drawing are up to: which machine is
+    answering, the drawing pass now running or the last one (prewarm.py writes
+    prewarm_status.json as it goes), how far each model's newest run is posted
+    and drawn, and how full the disk is. Worked out at most every 20 seconds.
+    """
+    if _STATUS[1] is not None and time.time() - _STATUS[0] < 20:
+        return jsonify(_STATUS[1])
+    cache = hr.CACHE_DIR
+    out = dict(now=time.time(), host=socket.gethostname(),
+               machine="the always-on Mac" if sys.platform == "darwin" else "the droplet")
+
+    # the drawing pass: what it last wrote down, and whether one holds the lock now
+    try:
+        with open(os.path.join(cache, "prewarm_status.json")) as fh:
+            out["prewarm"] = json.load(fh)
+    except Exception:
+        out["prewarm"] = None
+    running = False
+    try:
+        with open(os.path.join(cache, "prewarm.lock"), "a") as lk:
+            try:
+                fcntl.flock(lk, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                fcntl.flock(lk, fcntl.LOCK_UN)
+            except OSError:
+                running = True
+    except Exception:
+        pass
+    out["running"] = running
+
+    # each model's newest run: how far it is posted, how much of it is drawn
+    names = os.listdir(cache)
+    have = set(names)
+    models = []
+    for key, m in hr.MODELS.items():
+        row = dict(key=key, label=m["label"], name=m["name"])
+        try:
+            newest = hr.latest_available_run(key)
+            runs = []
+            for k in range(3):
+                r = newest - timedelta(hours=k * m["cycle"])
+                ready = hr.ready_maps(key, r, have)
+                runs.append(dict(run=r.strftime("%Y%m%d%H"), iso=r.strftime("%Y-%m-%dT%H:00:00Z"),
+                                 max_fxx=hr.run_max(key, r),
+                                 maps=sum(len(h) for f in ready.values() for h in f.values())))
+            row.update(runs=runs, posted=hr.posted_through(key, newest))
+            if key in loop.LOOPS:
+                lr = loop.latest_run(key)
+                tag = "loop_%s_%s_%s_" % (loop.REV, key, lr.strftime("%Y%m%d%H"))
+                row["loop"] = dict(run=lr.strftime("%Y%m%d%H"), iso=lr.strftime("%Y-%m-%dT%H:00:00Z"),
+                                   frames=sum(n.startswith(tag) for n in names),
+                                   times=len(loop.minutes(key)))
+        except Exception as e:
+            row["error"] = str(e)[:200]
+        models.append(row)
+    out["models"] = models
+
+    # the disk, and how much of it the map cache holds
+    du = shutil.disk_usage(cache)
+    files = size = 0
+    for e in os.scandir(cache):
+        if e.is_file(follow_symlinks=False):
+            files += 1
+            size += e.stat(follow_symlinks=False).st_size
+    out["disk"] = dict(total=du.total, used=du.used, free=du.free, cache_bytes=size, cache_files=files)
+    _STATUS[:] = [time.time(), out]
+    return jsonify(out)
 
 
 @app.route("/loop")

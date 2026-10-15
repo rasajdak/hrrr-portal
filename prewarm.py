@@ -23,9 +23,11 @@ anywhere from the same commit is the file the web server would have made.
 """
 
 import fcntl
+import json
 import multiprocessing
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -142,29 +144,97 @@ def groups(want=LEAN):
 
 
 def draw(group):
-    """Draw one group. Returns (maps drawn, the (model, hour) if not posted yet)."""
+    """
+    Draw one group. Returns (maps drawn, the (model, hour) if not posted yet,
+    [what was skipped and why], for the status page).
+    """
     model, run, field, fxx, regions = group
-    drawn = 0
+    drawn, notes = 0, []
+
+    def skip(region, e, label="f%03d" % fxx):
+        print("skip %s %s %s %s: %s" % (model, field, label, region, e), flush=True)
+        notes.append(dict(model=model, field=field, fxx=fxx, region=region, error=str(e)[:200]))
+
     if field.startswith("loop"):
         try:
             loop.frames(model, run, fxx, regions, kind=field.partition(":")[2] or "radar")
-            return len(regions), None
+            return len(regions), None, notes
         except RuntimeError as e:
-            return 0, ((model, "loop") if "not posted" in str(e) else None)
+            return 0, ((model, "loop") if "not posted" in str(e) else None), notes
         except Exception as e:
-            print("skip %s %s %d min: %s" % (model, field, fxx, e), flush=True)
-            return 0, None
+            skip("", e, "%d min" % fxx)
+            return 0, None, notes
     for region in regions:
         try:
             hr.render_map(field, run, fxx, region, model)
             drawn += 1
         except RuntimeError as e:
             if "not posted" in str(e):
-                return drawn, (model, fxx)
-            print("skip %s %s f%03d %s: %s" % (model, field, fxx, region, e), flush=True)
+                return drawn, (model, fxx), notes
+            skip(region, e)
         except Exception as e:
-            print("skip %s %s f%03d %s: %s" % (model, field, fxx, region, e), flush=True)
-    return drawn, None
+            skip(region, e)
+    return drawn, None, notes
+
+
+# ------------------------------------------------------------------ status ---
+# What the last pass did and what this one is doing, for /status. One small
+# JSON file in the cache, rewritten every few seconds while a pass runs.
+STATUS = os.path.join(hr.CACHE_DIR, "prewarm_status.json")
+HISTORY = 72             # passes kept: half a day at one every ten minutes
+NOTES = 60               # skips kept from the latest pass
+
+
+def _status_read():
+    try:
+        with open(STATUS) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+class Status(object):
+    def __init__(self, want, workers):
+        old = _status_read()
+        self.s = dict(host=socket.gethostname(), plan="wide" if want is WIDE else "lean",
+                      workers=workers, state="starting", started=time.time(), finished=None,
+                      drawn=0, groups=0, done=0, current=None, notes=[], note_count=0,
+                      history=old.get("history", [])[-HISTORY:])
+        self.last = 0
+        self.write(force=True)
+
+    def write(self, force=False):
+        if not force and time.time() - self.last < 5:
+            return
+        self.last = time.time()
+        try:
+            tmp = STATUS + ".part"
+            with open(tmp, "w") as fh:
+                json.dump(self.s, fh)
+            os.replace(tmp, STATUS)
+        except Exception:
+            pass
+
+    def set(self, **kw):
+        self.s.update(kw)
+        self.write(force=True)
+
+    def step(self, group, n, notes):
+        self.s["drawn"] += n
+        self.s["done"] += 1
+        self.s["current"] = dict(model=group[0], field=group[2], fxx=group[3],
+                                 run=group[1].strftime("%Y%m%d%H"))
+        self.s["note_count"] += len(notes)
+        self.s["notes"] = (self.s["notes"] + notes)[-NOTES:]
+        self.write()
+
+    def end(self, state):
+        now = time.time()
+        self.s.update(state=state, finished=now, current=None)
+        self.s["history"] = (self.s["history"] + [dict(
+            t=self.s["started"], secs=round(now - self.s["started"], 1), drawn=self.s["drawn"],
+            groups=self.s["groups"], done=self.s["done"], skips=self.s["note_count"], state=state)])[-HISTORY:]
+        self.write(force=True)
 
 
 def prune():
@@ -272,9 +342,11 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
     prune()
     if prune_only:
         return
+    st = Status(want, workers)
     free = shutil.disk_usage(hr.CACHE_DIR).free / 1e9
     if free < MIN_FREE_GB:
         print("only %.1f GB free: drawing nothing this pass" % free)
+        st.end("low disk")
         return
     # The web server is the fallback, not a second drawer. While another
     # machine has delivered maps in the last half hour (mapsync-receive touches
@@ -284,13 +356,16 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
                         if n.startswith(".in.")]          # a delivery still arriving
     if want is LEAN and any(os.path.exists(p) and time.time() - os.path.getmtime(p) < 1800 for p in stamps):
         print("another machine is drawing: pruned only")
+        st.end("stood down: another machine is drawing")
         return
     # The same when the drawing machine serves the site itself (deploy/mac/
     # serve.sh): its maps never come here, but its app answers on this port.
     if want is LEAN and served_elsewhere():
         print("another machine is serving: pruned only")
+        st.end("stood down: another machine is serving")
         return
     start, drawn, missing = time.time(), 0, set()
+    st.set(state="building region layers")
     # A region's loop layers (land and relief, then roads and names) are slow to
     # build the first time, so they are made here, ahead of anyone asking.
     for region in want["loop_areas"]:
@@ -300,21 +375,28 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
             except Exception as e:
                 print("skip loop %s layer for %s: %s" % (layer, region, e), flush=True)
     work = [g for g in groups(want) if g[4]]
+    st.set(state="drawing", groups=len(work))
+    out_of_time = False
     if workers > 1 and work:
         # The first group is drawn here, alone: on a fresh machine it is what
         # fetches the border and county files, and several processes fetching
         # them at once would trip over each other.
-        n, miss = draw(work.pop(0))
+        first = work.pop(0)
+        n, miss, notes = draw(first)
+        st.step(first, n, notes)
         drawn += n
         if miss:
             missing.add(miss)
         pool = multiprocessing.Pool(workers)
         try:
-            for n, miss in pool.imap_unordered(draw, work):
+            # imap keeps the order, so each answer is matched to its group
+            for g, (n, miss, notes) in zip(work, pool.imap(draw, work)):
+                st.step(g, n, notes)
                 drawn += n
                 if miss:
                     missing.add(miss)
                 if time.time() - start > budget:
+                    out_of_time = True
                     break
         finally:
             pool.terminate()
@@ -322,14 +404,18 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
     else:
         for g in work:
             if time.time() - start > budget:
+                out_of_time = True
                 break
             if (g[0], g[3]) in missing:          # that hour is not posted yet
+                st.step(g, 0, [])
                 continue
-            n, miss = draw(g)
+            n, miss, notes = draw(g)
+            st.step(g, n, notes)
             drawn += n
             if miss:
                 missing.add(miss)
     print("drew %d maps in %.0f s" % (drawn, time.time() - start), flush=True)
+    st.end("out of time, the rest next pass" if out_of_time else "done")
     if dest:
         n = push(dest, key)
         if n > 0:
