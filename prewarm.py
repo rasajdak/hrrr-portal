@@ -200,7 +200,7 @@ class Status(object):
                       workers=workers, state="starting", started=time.time(), finished=None,
                       drawn=0, groups=0, done=0, current=None, notes=[], note_count=0,
                       history=old.get("history", [])[-HISTORY:])
-        self.last = 0
+        self.last = self.said = 0
         self.write(force=True)
 
     def write(self, force=False):
@@ -227,6 +227,13 @@ class Status(object):
         self.s["note_count"] += len(notes)
         self.s["notes"] = (self.s["notes"] + notes)[-NOTES:]
         self.write()
+        # a line in the log about once a minute, so `tail -f` shows a pass moving
+        if time.time() - self.said > 60:
+            self.said = time.time()
+            c = self.s["current"]
+            print("drawing: %d of %d jobs, %d maps so far, now %s %s %s" % (
+                self.s["done"], self.s["groups"], self.s["drawn"], c["model"], c["field"],
+                ("%d min" % c["fxx"]) if c["field"].startswith("loop") else "f%03d" % c["fxx"]), flush=True)
 
     def end(self, state):
         now = time.time()
@@ -343,6 +350,7 @@ def main(workers=1, dest=None, key=None, prune_only=False, budget=BUDGET, want=L
     if prune_only:
         return
     st = Status(want, workers)
+    print("pass started %s" % time.strftime("%H:%M"), flush=True)
     free = shutil.disk_usage(hr.CACHE_DIR).free / 1e9
     if free < MIN_FREE_GB:
         print("only %.1f GB free: drawing nothing this pass" % free)
