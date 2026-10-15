@@ -97,6 +97,8 @@
   #share{position:absolute;left:0;right:0;top:56px;bottom:120px;z-index:1100;background:var(--bg);display:none;
     flex-direction:column;padding:10px 14px 6px}
   body.static #share{display:flex}
+  /* the live map stays laid out underneath, but must not show round the sheet */
+  body.static #map{visibility:hidden}
   body.static #legend, body.static #meteo, body.static a.credit, body.static #opwrap, body.static #basewrap{display:none}
   #sharehead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
   #sharehead .sp{flex:1}
@@ -623,7 +625,8 @@
   function drawShare(){
     var q=mapQuery(), url="/api/map?"+q+"&rv="+CFG.render_rev, img=$("shareimg"), msg=$("sharemsg"), tok=++shareTok;
     shareBusy=true; status(null);
-    msg.textContent="drawing the map…"; msg.style.display="block"; img.classList.add("wait");
+    // while playing, the last frame just stays up until the next is in
+    if(!playing){ msg.textContent="drawing the map…"; msg.style.display="block"; img.classList.add("wait"); }
     $("sharedl").href=url+"&dl=1";
     $("shareopen").href=url;
     // load off-screen and swap, so the last frame stays up until the next is ready
