@@ -431,13 +431,13 @@
   }
 
   // ---- playback ----
-  var SECONDS={hrrr:12, nam:15, gfs:15, ecmwf:15};       // one pass at normal speed
+  var SECONDS={hrrr:12, nam:15, gfs:15, ecmwf:15, hrdps:15};       // one pass at normal speed
   function tick(now){
     requestAnimationFrame(tick);
     var dt=Math.min(0.1,(now-last)/1000); last=now;
     var n=usable();
     if(META&&playing&&n>1){
-      var end=n-1, rate=(META.minutes.length-1)/SECONDS[MODEL]*(recorder?1:parseFloat($("speed").value));
+      var end=n-1, rate=(META.minutes.length-1)/(SECONDS[MODEL]||15)*(recorder?1:parseFloat($("speed").value));
       if(head>=end){                                      // rest on the last frame, then go round
         hold+=dt;
         if(recorder&&hold>0.8){ stopRecording(false); }

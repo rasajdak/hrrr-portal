@@ -64,6 +64,7 @@ LOOPS = {
     "nam":   dict(step=60,  to=60 * 60,  label="NAM 3 km, next 60 hours"),
     "gfs":   dict(step=60,  to=72 * 60,  label="GFS, next 3 days"),
     "ecmwf": dict(step=180, to=120 * 60, label="ECMWF, next 5 days"),
+    "hrdps": dict(step=60,  to=48 * 60,  label="HRDPS (Canada), next 48 hours"),
 }
 
 
@@ -140,8 +141,8 @@ def _fields(model, run_dt, m):
         return dbz, kind, t2m, lat, lon
     fxx = m // 60
     url = hr._grib_url(model, "sfc", run_dt, fxx)
-    if model == "ecmwf":
-        rate = hr._one(model, url, ":sfc:tprate:")[0][0] * 3600.0
+    if model in hr.RATE_RADAR:
+        rate = hr._one(model, url, hr.spec("prate", model)["search"])[0][0] * 3600.0
         dbz = 10.0 * np.log10(200.0 * np.maximum(rate, 1e-4) ** 1.6)
     else:
         dbz = hr._one(model, url, ":REFC:")[0][0]
@@ -182,8 +183,9 @@ def _index(model, region, lat, lon):
     Where each pixel of the frame falls on the model's grid, as fractional row
     and column, so a field becomes a picture with one bilinear lookup. Worked
     out once per model and region: the grid is regular in its own projection
-    (Lambert for HRRR and NAM, plain latitude and longitude for GFS and ECMWF),
-    so its spacing is measured from the grid itself, not assumed.
+    (Lambert for HRRR and NAM, plain latitude and longitude for GFS and ECMWF,
+    latitude and longitude about a moved pole for the HRDPS), so its spacing is
+    measured from the grid itself, not assumed.
     """
     key = (model, region)
     if key in _INDEX:
@@ -201,9 +203,14 @@ def _index(model, region, lat, lon):
         i = (plat - lat[0, 0]) / (lat[-1, 0] - lat[0, 0]) * (lat.shape[0] - 1)
         j = (plon - lon[0, 0]) / (lon[0, -1] - lon[0, 0]) * (lon.shape[1] - 1)
     else:
-        grid = ccrs.LambertConformal(
-            central_longitude=-97.5, central_latitude=38.5, standard_parallels=(38.5, 38.5),
-            globe=ccrs.Globe(semimajor_axis=6371229, semiminor_axis=6371229))
+        if model in hr.GRID_POLE:
+            # GRIB names the south pole of the rotation; cartopy wants the north
+            slat, slon = hr.GRID_POLE[model]
+            grid = ccrs.RotatedPole(pole_longitude=(slon + 180.0) % 360.0, pole_latitude=-slat)
+        else:
+            grid = ccrs.LambertConformal(
+                central_longitude=-97.5, central_latitude=38.5, standard_parallels=(38.5, 38.5),
+                globe=ccrs.Globe(semimajor_axis=6371229, semiminor_axis=6371229))
         corner = grid.transform_points(pc, np.array([lon[0, 0], lon[0, -1], lon[-1, 0]], dtype="float64"),
                                        np.array([lat[0, 0], lat[0, -1], lat[-1, 0]], dtype="float64"))
         dx = (corner[1, 0] - corner[0, 0]) / (lon.shape[1] - 1)

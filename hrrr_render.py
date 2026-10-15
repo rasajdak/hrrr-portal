@@ -127,6 +127,10 @@ def _img_size():
 #   stride  : grid downsample for the overlay
 #   url     : format string; {ymd} {hh} {fxx} {product}
 ECMWF_HOST = "https://storage.googleapis.com/ecmwf-open-data"
+# Environment and Climate Change Canada's open data. One GRIB file per field,
+# per hour, in a folder per forecast hour, and no index: the folder's listing
+# stands in for one (see _idx), so a "url" for these models is that folder.
+MSC_HOST = "https://dd.weather.gc.ca"
 MODELS = {
     "hrrr": dict(label="HRRR", name="HRRR 3 km", desc="High-Resolution Rapid Refresh · 3 km · hourly",
         cycle=1, max_fxx=18, step=1, probe=0, back=8, stride=2, long=((0, 6, 12, 18), 48),
@@ -152,6 +156,12 @@ MODELS = {
         cycle=12, max_fxx=240, step=6, probe=240, back=4, stride=1,
         url=ECMWF_HOST + "/{ymd}/{hh}z/ifs/0p25/oper/"
             "{ymd}{hh}0000-{fxx}h-oper-fc.grib2"),
+    # Canada's 2.5 km model: southern Canada and the northern US, Great Lakes
+    # whole. Its grid is a rotated latitude/longitude one; its runs post about
+    # three hours after they start.
+    "hrdps": dict(label="HRDPS", name="HRDPS 2.5 km", desc="Canadian High Resolution Deterministic · 2.5 km · every 6 h, out 48 h",
+        cycle=6, max_fxx=48, step=1, probe=48, back=5, stride=2,
+        url=MSC_HOST + "/{ymd}/WXO-DD/model_hrdps/continental/2.5km/{hh}/{fxx:03d}/"),
 }
 ALL = ("hrrr", "nam", "rap", "gfs")
 
@@ -514,8 +524,51 @@ ECMWF = {
 for _k, _o in ECMWF.items():
     FIELDS[_k]["models"] = FIELDS[_k].get("models", ALL) + ("ecmwf",)
     FIELDS[_k].setdefault("per", {})["ecmwf"] = _o
-# WMO precipitation-type codes -> rain 1, freezing rain 2, sleet or mix 3, snow 4
-WMO_PTYPE = {1: 1, 3: 2, 12: 2, 7: 3, 8: 3, 5: 4, 6: 4}
+
+# The HRDPS, by the field names in its file names. Units are the ones NCEP uses
+# (K, m/s, Pa, gpm, kg/m²), so the shared conversions hold. Totals run from the
+# start of the run, as ECMWF's do. No radar field: intensity comes from the
+# precipitation rate. Its PTYPE field is not used: two of its codes disagree
+# with the WMO table (6 and 7 turn up at 7 to 11 C), so the type is read from
+# what fell in the hour instead, as rain, freezing rain, ice pellets and snow,
+# each posted on its own (`ptype="split"`, see _fetch).
+HRDPS = {
+    "t2m": dict(search=":TMP_AGL-2m:"),
+    "dpt2m": dict(search=":DPT_AGL-2m:"),
+    "rh2m": dict(search=":RH_AGL-2m:"),
+    "wind10m": dict(search=":WIND_AGL-10m:"),
+    "gust": dict(search=":GUST_AGL-10m:"),
+    "mslp": dict(search=":PRMSL_MSL:"),
+    "cape": dict(search=":CAPE_Sfc:"),
+    "tcdc": dict(search=":TCDC_Sfc:"),
+    "hpbl": dict(search=":HPBL_Sfc:"),
+    "apcp": dict(search=":APCP_Sfc:", diff=True),
+    "apcp_tot": dict(search=":APCP_Sfc:"),
+    "arrival": dict(),
+    "prate": dict(search=":PRATE_Sfc:"),
+    "snow10": dict(search=":WEASN_Sfc:"),
+    "snow_step": dict(search=":WEASN_Sfc:", diff=True),
+    "frzr": dict(search=":WEAFR_Sfc:"),
+    "snod": dict(search=":SNOD_Sfc:"),
+    "swe": dict(search=":SDWE_Sfc:"),
+    "ptype": dict(search=":PRATE_Sfc:", ptype="split"),
+    "refc_ptype": dict(search=":PRATE_Sfc:"),
+    "h500": dict(search=":HGT_ISBL_0500:"),
+    "t850": dict(search=":TMP_ISBL_0850:"),
+    "t500": dict(search=":TMP_ISBL_0500:"),
+    "rh700": dict(search=":RH_ISBL_0700:"),
+    "w700": dict(search=":VVEL_ISBL_0700:"),
+    "wind250": dict(search=":WIND_ISBL_0250:", wind=False),
+    "wind850": dict(search=":WIND_ISBL_0850:", wind=False),
+}
+for _k, _o in HRDPS.items():
+    FIELDS[_k]["models"] = FIELDS[_k].get("models", ALL) + ("hrdps",)
+    FIELDS[_k].setdefault("per", {})["hrdps"] = _o
+# models whose radar picture is worked out from the precipitation rate
+RATE_RADAR = ("ecmwf", "hrdps")
+# WMO precipitation-type codes (table 4.201) -> rain 1, freezing rain 2, sleet
+# or mix 3, snow 4. Thunderstorm and drizzle count as rain.
+WMO_PTYPE = {1: 1, 2: 1, 11: 1, 3: 2, 12: 2, 4: 3, 7: 3, 8: 3, 5: 4, 6: 4}
 
 
 def spec(field_key, model="hrrr"):
@@ -555,8 +608,13 @@ def field_catalog(model="hrrr"):
 
 
 def credit(model):
-    # ECMWF's open data is CC BY 4.0: the attribution is a condition of use
-    return "ECMWF IFS open data (CC BY 4.0)" if model == "ecmwf" else "NOAA " + MODELS[model]["label"].split()[0]
+    # ECMWF's open data is CC BY 4.0 and Canada's is under the Open Government
+    # Licence: for both, the attribution is a condition of use
+    if model == "ecmwf":
+        return "ECMWF IFS open data (CC BY 4.0)"
+    if model == "hrdps":
+        return "Environment and Climate Change Canada HRDPS"
+    return "NOAA " + MODELS[model]["label"].split()[0]
 
 
 def model_catalog():
@@ -590,11 +648,18 @@ def _http(url, rng=None, timeout=60, method="GET"):
             if e.code not in (500, 503) or attempt == 4:
                 raise
             time.sleep(0.8 * (attempt + 1))
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+            # a dropped connection (Canada's server drops about one in a dozen)
+            if attempt == 4:
+                raise
+            time.sleep(0.8 * (attempt + 1))
 
 
 def _index_url(url):
     if url.startswith(ECMWF_HOST):
         return url[:-len(".grib2")] + ".index"
+    if url.startswith(MSC_HOST):
+        return url                       # the folder's listing is the index
     return url + ".idx"
 
 
@@ -613,6 +678,17 @@ def _idx(url):
         if e.code in (403, 404):
             raise RuntimeError("the model has not posted that forecast hour yet")
         raise
+    if url.startswith(MSC_HOST):
+        # "...T12Z_MSC_HRDPS_TMP_AGL-2m_RLatLon0.0225_PT024H.grib2" is the field
+        # TMP_AGL-2m: a row ":TMP_AGL-2m:" with the file name after a bar
+        rows = []
+        for name in sorted(set(re.findall(r'href="([^"/?]+\.grib2)"', text))):
+            m = re.search(r"_MSC_[A-Z]+_(.+?)_RLatLon", name) or re.search(r"_MSC_[A-Z]+_(.+?)_", name)
+            if m:
+                rows.append((None, None, ":%s:|%s" % (m.group(1), name)))
+        if not rows:
+            raise RuntimeError("the model has not posted that forecast hour yet")
+        return rows
     if url.startswith(ECMWF_HOST):
         import json
         rows = []
@@ -651,13 +727,36 @@ def _locate(url, search):
     raise RuntimeError("field not in this file (%s)" % search.strip(":"))
 
 
+def _where(url, search):
+    """
+    (file, start, end) of the message matching `search`: a byte range of `url`
+    for models that pack every field in one file, the whole of that field's own
+    file (start and end None) for the ones that post a file per field.
+    """
+    if url.startswith(MSC_HOST):
+        pat = re.compile(search)
+        for _, _, line in _idx(url):
+            key, _, name = line.partition("|")
+            if pat.search(key):
+                return url + name, None, None
+        raise RuntimeError("field not in this file (%s)" % search.strip(":"))
+    start, end = _locate(url, search)
+    return url, start, end
+
+
+def _get(url, search):
+    """The raw bytes of the message matching `search` (see _where)."""
+    path, start, end = _where(url, search)
+    return _http(path, rng=None if start is None else (start, end))
+
+
 @functools.lru_cache(maxsize=4)
 def _message(model, url, start, end):
     """
     Download and decode one GRIB message: ([arrays], lat2d, lon2d). Usually one
     array; two when the message carries a U/V pair.
     """
-    return _decode(model, _http(url, rng=(start, end)))
+    return _decode(model, _http(url, rng=None if start is None else (start, end)))
 
 
 @_locked
@@ -674,6 +773,10 @@ def _decode(model, raw):
             if lat is None:
                 lat = np.asarray(ds.latitude.values, dtype="float32")
                 lon = np.asarray(ds.longitude.values, dtype="float32")
+                a = ds[name].attrs
+                if a.get("GRIB_gridType") == "rotated_ll":
+                    GRID_POLE[model] = (float(a["GRIB_latitudeOfSouthernPoleInDegrees"]),
+                                        float(a["GRIB_longitudeOfSouthernPoleInDegrees"]))
             ds.close()
     finally:
         try:
@@ -703,11 +806,11 @@ def _decode(model, raw):
 # hour, so the flattened lat/lon is captured once (from the first fetch) and
 # reused for all point lookups instead of carrying coords around per query.
 _GRID = {}
+GRID_POLE = {}          # model -> (lat, lon) of the south pole its rotated grid turns about
 
 
 def _one(model, url, search):
-    start, end = _locate(url, search)
-    return _message(model, url, start, end)
+    return _message(model, *_where(url, search))
 
 
 def _accumulate(f, model, run_dt, fxx):
@@ -740,8 +843,7 @@ def _accumulate(f, model, run_dt, fxx):
         # downloads only; eccodes decodes one at a time, back on this thread
         url = _grib_url(model, f.get("product", "sfc"), run_dt, h)
         fmt = dict(f=h, p=h - step)
-        return [_http(url, rng=_locate(url, f[k].format(**fmt)))
-                for k in ("search", "weight") if f.get(k)]
+        return [_get(url, f[k].format(**fmt)) for k in ("search", "weight") if f.get(k)]
 
     lat = lon = None
     with ThreadPoolExecutor(6) as ex:
@@ -789,9 +891,9 @@ def _radar_ptype(model, run_dt, fxx):
     simply did not say) is called snow where it is freezing at 2 m, else rain.
     """
     url = _grib_url(model, "sfc", run_dt, fxx)
-    if model == "ecmwf":
+    if model in RATE_RADAR:
         # Marshall-Palmer, Z = 200 R^1.6, turns a rain rate into a radar echo
-        rate = _one(model, url, ":sfc:tprate:")[0][0] * 3600.0
+        rate = _one(model, url, spec("prate", model)["search"])[0][0] * 3600.0
         dbz = 10.0 * np.log10(200.0 * np.maximum(rate, 1e-4) ** 1.6)
     else:
         dbz = _one(model, url, ":REFC:")[0][0]
@@ -830,7 +932,7 @@ def _arrival_frames(model, run_dt, fxx, f, step, url, find, memo):
     # ECMWF posts running totals, so a frame's own amount needs the one before
     need = ([have] if f.get("diff") and have else []) + todo
     with ThreadPoolExecutor(6) as ex:
-        raws = dict(zip(need, ex.map(lambda m: _http(url(m), rng=_locate(url(m), find(m))), need)))
+        raws = dict(zip(need, ex.map(lambda m: _get(url(m), find(m)), need)))
     lat = lon = prev = None
     for m in need:
         arrs, lat, lon = _decode(model, raws.pop(m))
@@ -898,8 +1000,8 @@ def _arrival(model, run_dt, fxx):
         falling = np.load(now_path)["a"]
     except Exception:
         try:
-            if model == "ecmwf":
-                falling = _one(model, url(0), ":sfc:tprate:")[0][0] * 3600.0 >= 0.25
+            if model in RATE_RADAR:
+                falling = _one(model, url(0), spec("prate", model)["search"])[0][0] * 3600.0 >= 0.25
             else:
                 falling = _one(model, url(0), ":REFC:")[0][0] >= ARRIVAL_DBZ
         except Exception:
@@ -976,6 +1078,18 @@ def _fetch(f, model, run_dt, fxx):
         return _accumulate(f, model, run_dt, fxx)
     url = _grib_url(model, f.get("product", "sfc"), run_dt, fxx)
     fmt = dict(f=fxx, p=fxx - MODELS[model]["step"])
+    if f.get("ptype") == "split":
+        # what fell in the hour to fxx, by type: the largest share names it,
+        # rain and snow each a quarter or more of it makes a mix
+        arrs, lat, lon = _one(model, url, f["search"])
+        if fxx == 0:
+            return np.zeros_like(arrs[0]), lat, lon      # nothing has fallen yet
+        got = [np.nan_to_num(_one(model, url, ":%s-Accum1h_Sfc:" % v)[0][0])
+               for v in ("WEARN", "WEAFR", "WEAPE", "WEASN")]
+        total = sum(got)
+        out = (np.argmax(np.stack(got), axis=0) + 1).astype("float32")
+        out = np.where((got[0] >= 0.25 * total) & (got[3] >= 0.25 * total), 3.0, out)
+        return np.where(total >= 0.05, out, 0.0), lat, lon
     if f.get("ptype") == "wmo":
         arrs, lat, lon = _one(model, url, f["search"])
         out = np.zeros_like(arrs[0])

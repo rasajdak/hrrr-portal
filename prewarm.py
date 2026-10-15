@@ -50,6 +50,7 @@ import loop
 #   loops  : fields that move, drawn every N hours out to a limit
 #   arrive : the hours an arrival-time map is drawn out to
 #   lake   : the lake effect score, drawn only for the regions that have lakes
+#            (None for a model the score cannot be worked out for)
 #   long   : for HRRR, the newest of its 48-hour runs (00, 06, 12, 18Z) past
 #            hour 18: totals at `at`, moving fields every `every` hours, the
 #            arrival map at `arrive`. Drawn while newer, shorter runs land.
@@ -84,6 +85,11 @@ WIDE = dict(
         "nam":   dict(totals=["apcp_tot", "snow10"], at=[12, 24, 36, 48, 60], loops=MOVING, every=3, to=60, arrive=[36, 60], lake=3),
         "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240, arrive=[72, 120], lake=6),
         "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240, arrive=[72, 120], lake=6),
+        # RAP has no land mask, so no lake effect score; it runs every hour, so
+        # every third hour is enough. The HRDPS runs four times a day: all of it.
+        "rap":   dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 21], loops=MOVING, every=3, to=21, arrive=[21], lake=None),
+        "hrdps": dict(totals=["apcp_tot", "snow10"], at=[12, 24, 36, 48], loops=MOVING_GLOBAL, every=1, to=48,
+                      arrive=[24, 48], lake=None),
     })
 
 BUDGET = 8 * 60          # seconds per pass; the timer fires every 10 minutes
@@ -119,7 +125,7 @@ def groups(want=LEAN):
         for fxx in p["arrive"]:
             todo = [r for r in AREAS if not os.path.exists(hr.map_path(model, "arrival", run, fxx, r))]
             yield model, run, "arrival", fxx, todo
-        for fxx in range(0, p["to"] + 1, p["lake"]):
+        for fxx in range(0, p["to"] + 1, p["lake"]) if p["lake"] else ():
             todo = [r for r in LAKE_AREAS if not os.path.exists(hr.map_path(model, "lake_effect", run, fxx, r))]
             yield model, run, "lake_effect", fxx, todo
         # the newest long run, past where the ordinary runs stop
@@ -136,6 +142,8 @@ def groups(want=LEAN):
                 todo = [r for r in LAKE_AREAS if not os.path.exists(hr.map_path(model, "lake_effect", lrun, fxx, r))]
                 yield model, lrun, "lake_effect", fxx, todo
         # then that model's loop, one group per forecast time and kind
+        if model not in loop.LOOPS:                     # RAP has none
+            continue
         lrun = loop.latest_run(model)
         for kind in want.get("loop_kinds", ["radar"]):
             for m in loop.minutes(model):

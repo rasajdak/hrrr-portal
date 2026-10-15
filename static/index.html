@@ -810,7 +810,7 @@
       CFG=cfg; MODEL=cfg.model; STEP=cfg.step_hours; run=cfg.latest_run; bounds=cfg.bounds;
       var me=cfg.models.find(function(x){return x.key===MODEL;});
       $("modeldesc").textContent=me.desc+" · raw GRIB2";
-      $("credit").textContent="Data: "+me.credit+" via AWS Open Data · rendered from raw GRIB2";
+      $("credit").textContent="Data: "+me.credit+" · rendered from raw GRIB2";
       $("runpill").textContent=""; RUNS=[];
       loadRuns();
       $("slider").max=cfg.max_fxx; $("fmax").textContent=cfg.max_fxx;
