@@ -1040,7 +1040,8 @@ def latest_available_run(model="hrrr", max_age=240):
     base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     base -= timedelta(hours=base.hour % m["cycle"])
     found = None
-    for b in range(0 if m["cycle"] > 1 else 1, m["back"] + 1):
+    # from the run of this very hour: HRRR's first hours land about 50 minutes in
+    for b in range(0, m["back"] + 1):
         r = base - timedelta(hours=b * m["cycle"])
         if _exists(_index_url(_grib_url(model, "sfc", r, m["probe"]))):
             found = r
