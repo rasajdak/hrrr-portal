@@ -487,6 +487,15 @@
     status(MODEL.toUpperCase()+" has not posted F+"+pad(h)+" of this run yet. It is out through F+"+pad(lastHour())+"; the rest are still coming in.");
     clearTimeout(notPosted.t); notPosted.t=setTimeout(function(){ status(null); },4500);
   }
+  // Runs of one model need not go equally far: HRRR's 00, 06, 12 and 18Z runs
+  // go out 48 hours, the rest 18. The timeline follows the run on show.
+  function setRunMax(n){
+    if(!n||n===CFG.max_fxx) return;
+    CFG.max_fxx=n; buildTicks();
+    if(!radarMode&&!activeIsTile){ $("slider").max=n; $("fmax").textContent=n; }
+    if(fxx>n) fxx=n;
+    showReady();
+  }
   function showPosted(){
     var sl=$("slider"), note=$("postednote"), last=lastHour(), max=CFG.max_fxx;
     if(radarMode||activeIsTile||last>=max){
@@ -506,7 +515,7 @@
     if(!r) return Promise.resolve();
     return fetch("/api/posted?model="+m+"&run="+r).then(function(x){ return x.json(); }).then(function(j){
       if(m!==MODEL||r!==run||j.through===undefined) return;
-      POSTED=j.through; showPosted();
+      POSTED=j.through; setRunMax(j.max_fxx); showPosted();
     }).catch(function(){});
   }
 
@@ -659,9 +668,10 @@
     sel.innerHTML="";
     if(!RUNS.some(function(r){ return r.run===run; }))        // a run older than the list reaches
       RUNS.push({run:run, iso:run.slice(0,4)+"-"+run.slice(4,6)+"-"+run.slice(6,8)+"T"+run.slice(8,10)+":00:00Z", ready:0});
+    var lens=RUNS.map(function(r){ return r.max_fxx||0; }), longest=Math.max.apply(null,lens), mixed=longest>Math.min.apply(null,lens);
     RUNS.forEach(function(r,i){
       var o=document.createElement("option"); o.value=r.run;
-      o.textContent=(r.ready?"● ":"")+etRun(r.iso)+(i===0?"  newest":"");
+      o.textContent=(r.ready?"● ":"")+etRun(r.iso)+(mixed&&r.max_fxx===longest?"  · "+longest+" h":"")+(i===0?"  newest":"");
       sel.appendChild(o);
     });
     sel.value=run;
@@ -673,6 +683,7 @@
   function setRun(r){
     if(!r||r===run) return;
     stop(); run=r; READY={}; prefetched=false; POSTED=null; showPosted();
+    var me=RUNS.find(function(x){ return x.run===r; }); if(me) setRunMax(me.max_fxx);
     $("runpill").textContent="";
     showRun();
     loadReady(false).then(loadPosted).then(function(){ setField(field); });

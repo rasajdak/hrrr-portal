@@ -117,7 +117,8 @@ def _img_size():
 # ------------------------------------------------------------------ models ---
 # key -> where the files live and how far the run goes
 #   cycle   : hours between runs
-#   max_fxx : last forecast hour the portal shows
+#   max_fxx : last forecast hour the portal shows (most runs; see `long`)
+#   long    : runs that go further: (the UTC hours they start, their last hour)
 #   step    : hours between frames on the timeline
 #   probe   : the forecast hour whose .idx must exist before a run counts as
 #             posted. HRRR keeps 0 (the desk panel wants the newest run the
@@ -128,7 +129,7 @@ def _img_size():
 ECMWF_HOST = "https://storage.googleapis.com/ecmwf-open-data"
 MODELS = {
     "hrrr": dict(label="HRRR", name="HRRR 3 km", desc="High-Resolution Rapid Refresh · 3 km · hourly",
-        cycle=1, max_fxx=18, step=1, probe=0, back=8, stride=2,
+        cycle=1, max_fxx=18, step=1, probe=0, back=8, stride=2, long=((0, 6, 12, 18), 48),
         url="https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{ymd}/conus/"
             "hrrr.t{hh}z.wrf{product}f{fxx:02d}.grib2"),
     "nam": dict(label="NAM 3 km", name="NAM 3 km", desc="NAM CONUS nest · 3 km · every 6 h, out 60 h",
@@ -153,6 +154,29 @@ MODELS = {
             "{ymd}{hh}0000-{fxx}h-oper-fc.grib2"),
 }
 ALL = ("hrrr", "nam", "rap", "gfs")
+
+
+def run_max(model, run_dt=None):
+    """
+    The last forecast hour of one run. HRRR's 00, 06, 12 and 18Z runs go out 48
+    hours and the rest 18. Without a run, the furthest any run of the model goes.
+    """
+    m = MODELS[model]
+    hours, longer = m.get("long", ((), m["max_fxx"]))
+    if run_dt is None:
+        return longer if hours else m["max_fxx"]
+    return longer if run_dt.hour in hours else m["max_fxx"]
+
+
+def long_run(model, run_dt):
+    """The newest run at or before `run_dt` that goes the long way, or None if the model has none."""
+    hours = MODELS[model].get("long", ((),))[0]
+    if not hours:
+        return None
+    r = run_dt
+    while r.hour not in hours:
+        r -= timedelta(hours=1)
+    return r
 MESO = ("hrrr", "nam", "rap")
 
 
@@ -537,7 +561,7 @@ def credit(model):
 
 def model_catalog():
     return [dict(key=k, label=m["label"], name=m["name"], desc=m["desc"], credit=credit(k),
-                 max_fxx=m["max_fxx"], step=m["step"]) for k, m in MODELS.items()]
+                 max_fxx=run_max(k), step=m["step"]) for k, m in MODELS.items()]
 
 
 def extent_bounds():
@@ -788,7 +812,7 @@ def _arrival_frames(model, run_dt, fxx, f, step, url, find, memo):
     """The first-measurable hour through `fxx`, from the frames on disk and the ones still to fetch."""
     from concurrent.futures import ThreadPoolExecutor
     have, first, total = 0, None, None
-    for m in range(MODELS[model]["max_fxx"] * 60, 0, -step):
+    for m in range(run_max(model, run_dt) * 60, 0, -step):
         if os.path.exists(memo(m)):
             try:
                 z = np.load(memo(m))
@@ -989,8 +1013,8 @@ def _field(field_key, model, run_dt, fxx):
     m = MODELS[model]
     if fxx < f["min_fxx"]:
         raise ValueError("%s needs forecast hour >= %d" % (field_key, f["min_fxx"]))
-    if fxx > m["max_fxx"] or fxx % m["step"]:
-        raise ValueError("%s frames are every %d h out to %d" % (m["label"], m["step"], m["max_fxx"]))
+    if fxx > run_max(model, run_dt) or fxx % m["step"]:
+        raise ValueError("%s frames are every %d h out to %d" % (m["label"], m["step"], run_max(model, run_dt)))
     data, lat, lon = _fetch(f, model, run_dt, fxx)
     if f["conv"]:
         data = f["conv"](data)
@@ -1040,9 +1064,9 @@ def posted_through(model, run_dt):
     key = (model, run_dt)
     hit = _POSTED.get(key)
     m = MODELS[model]
-    if hit and (hit[1] >= m["max_fxx"] or time.time() - hit[0] < 90):
+    if hit and (hit[1] >= run_max(model, run_dt) or time.time() - hit[0] < 90):
         return hit[1]
-    hours = list(range(0, m["max_fxx"] + 1, m["step"]))
+    hours = list(range(0, run_max(model, run_dt) + 1, m["step"]))
     there = lambda h: _exists(_index_url(_grib_url(model, "sfc", run_dt, h)))
     if there(hours[-1]):
         last = hours[-1]
@@ -1505,6 +1529,7 @@ def recent_runs(model, count=None):
         r = latest - timedelta(hours=k * m["cycle"])
         ready = ready_maps(model, r, have)
         out.append(dict(run=r.strftime("%Y%m%d%H"), iso=r.strftime("%Y-%m-%dT%H:00:00Z"),
+                        max_fxx=run_max(model, r),
                         ready=sum(len(h) for f in ready.values() for h in f.values())))
     return out
 
@@ -1521,7 +1546,7 @@ def ready_maps(model, run_dt, have=None):
     out = {}
     for f in field_catalog(model):
         for region in REGIONS:
-            hours = [h for h in range(f["min_fxx"], m["max_fxx"] + 1, m["step"])
+            hours = [h for h in range(f["min_fxx"], run_max(model, run_dt) + 1, m["step"])
                      if os.path.basename(map_path(model, f["key"], run_dt, h, region)) in have]
             if hours:
                 out.setdefault(f["key"], {})[region] = hours

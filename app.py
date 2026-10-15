@@ -85,7 +85,7 @@ def config():
         latest_run=run.strftime("%Y%m%d%H"),
         latest_run_label=run.strftime("%Y-%m-%d %HZ"),
         run_iso=run.strftime("%Y-%m-%dT%H:00:00Z"),
-        max_fxx=m["max_fxx"],
+        max_fxx=hr.run_max(model, run),
         step_hours=m["step"],
         render_rev=hr.RENDER_REV,
     )
@@ -263,7 +263,7 @@ def posted():
         return jsonify(error=str(e)), 400
     last = hr.posted_through(model, run)
     return jsonify(model=model, run=run.strftime("%Y%m%d%H"), through=last,
-                   complete=last >= hr.MODELS[model]["max_fxx"])
+                   max_fxx=hr.run_max(model, run), complete=last >= hr.run_max(model, run))
 
 
 @app.route("/api/ready")
