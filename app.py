@@ -10,6 +10,7 @@ Endpoints
   GET /api/runs?model=        -> recent runs, newest first, for the run picker
   POST /api/save              -> keep one static map for good, under /saved/
   GET /saved                  -> the kept maps, newest first
+  GET /api/posted             -> the last forecast hour of a run the model has posted (query: model, run)
   GET /loop                   -> the animated futurecast page
   GET /api/loop               -> its run, frame times and layers (query: model, region, run, kind)
   GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m; kind radar|temp|gust)
@@ -250,6 +251,19 @@ def runs():
         return jsonify(model=_model(), runs=hr.recent_runs(_model()))
     except ValueError as e:
         return jsonify(error=str(e)), 400
+
+
+@app.route("/api/posted")
+def posted():
+    """How far into a run the model has posted, so the page can grey out the rest."""
+    try:
+        model = _model()
+        run = _parse_run(request.args.get("run"), model)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    last = hr.posted_through(model, run)
+    return jsonify(model=model, run=run.strftime("%Y%m%d%H"), through=last,
+                   complete=last >= hr.MODELS[model]["max_fxx"])
 
 
 @app.route("/api/ready")

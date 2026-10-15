@@ -50,6 +50,8 @@
   #readybar i{position:absolute;top:0;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:var(--accent2)}
   .check{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);font-weight:500;cursor:pointer;white-space:nowrap}
   .check input{accent-color:var(--accent2);margin:0}
+  #ticks span.later{opacity:.35}
+  #postednote{color:#f0b94e;display:none} #postednote.on{display:inline}
   #ticks{display:flex;justify-content:space-between;margin-top:7px;padding:0 4px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 
   #legend{position:absolute;right:14px;bottom:120px;z-index:900;background:rgba(19,27,38,.92);
@@ -190,7 +192,7 @@
 <div id="timeline">
   <div id="tlhead">
     <div id="lead">F+00 <span>lead time</span></div>
-    <div id="valid">Valid <b id="validloc">—</b> &nbsp;·&nbsp; <b id="validutc">—</b> &nbsp;·&nbsp; hr <b id="fhr">0</b>/<b id="fmax">18</b></div>
+    <div id="valid">Valid <b id="validloc">—</b> &nbsp;·&nbsp; <b id="validutc">—</b> &nbsp;·&nbsp; hr <b id="fhr">0</b>/<b id="fmax">18</b><span id="postednote"></span></div>
   </div>
   <div class="tlrow">
     <button class="icon" id="stepback" title="Step back">‹</button>
@@ -273,6 +275,7 @@
   var MODE="static";
   try{ if(localStorage.getItem("mode")==="live") MODE="live"; }catch(e){}
   var CFG=null, MODEL="hrrr", STEP=1, field="refc", fxx=0, run=null, bounds=null, opacity=0.82;
+  var POSTED=null;                  // the last hour of this run the model has posted (null: not known yet)
   var overlay=null;                       // L.imageOverlay for the model field
   var tileLayer=null;                     // L.tileLayer for an Observed layer
   var activeLayer=null;                   // whichever layer opacity should target
@@ -356,7 +359,8 @@
     $("legimg").src="/api/legend?model="+MODEL+"&field="+k+"&rv="+CFG.render_rev;
     setTimelineEnabled(true);
     if(fxx<f.min_fxx) fxx=f.min_fxx;
-    showReady();
+    if(fxx>lastHour()) fxx=lastHour();
+    showReady(); showPosted();
     var hrs=onlyReady();              // land on an hour that is drawn, if keeping to those
     if(hrs&&hrs.indexOf(fxx)<0) fxx=hrs.reduce(function(a,b){ return Math.abs(b-fxx)<Math.abs(a-fxx)?b:a; });
     prefetched=false;                 // new field -> new frames to warm
@@ -365,7 +369,7 @@
   }
 
   function activateTile(tf){
-    stop(); activeIsTile=true; radarMode=false; closeMeteo(); clearRadarLayers();
+    stop(); activeIsTile=true; radarMode=false; closeMeteo(); clearRadarLayers(); showPosted();
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);  // no HRRR/observed overlap
     if(tileLayer) map.removeLayer(tileLayer);
     tileLayer=L.tileLayer(tf.url(),{opacity:opacity,maxNativeZoom:tf.maxNativeZoom,
@@ -411,7 +415,7 @@
   }
   function clearRadarLayers(){ radarLayers.forEach(function(l){ map.removeLayer(l); }); radarLayers=[]; }
   function activateRadar(tf){
-    stop(); activeIsTile=true; radarMode=true; closeMeteo();
+    stop(); activeIsTile=true; radarMode=true; closeMeteo(); showPosted();
     if(overlay && map.hasLayer(overlay)) map.removeLayer(overlay);
     if(tileLayer){ map.removeLayer(tileLayer); tileLayer=null; }
     clearRadarLayers();
@@ -453,12 +457,13 @@
       if(pick!==undefined) setFxx(pick);
       return;
     }
+    if(d>0&&fxx+STEP>lastHour()){ notPosted(fxx+STEP); return; }
     setFxx(fxx+d*STEP);
   }
   function tlNext(){ if(radarMode){ var n=radarIdx+1; if(n>=radarTimes.length)n=0; setRadarIdx(n); }
                      else { var hrs=onlyReady();
                             if(hrs){ var nx=hrs.filter(function(h){return h>fxx;})[0]; setFxx(nx===undefined?hrs[0]:nx); return; }
-                            var n=fxx+STEP; if(n>CFG.max_fxx)n=0; setFxx(n); } }
+                            var n=fxx+STEP; if(n>lastHour())n=0; setFxx(n); } }
 
   function setFxx(v){
     if(activeIsTile) return;
@@ -466,7 +471,41 @@
     v=Math.round(v/STEP)*STEP;          // frames sit on the model's step
     var hrs=onlyReady();
     if(hrs) v=hrs.reduce(function(a,b){ return Math.abs(b-v)<Math.abs(a-v)?b:a; });
-    fxx=Math.max(f.min_fxx||0,Math.min(CFG.max_fxx, v)); draw();
+    var past=v>lastHour();
+    fxx=Math.max(f.min_fxx||0,Math.min(lastHour(), v)); draw();
+    if(past) notPosted(v);
+  }
+
+  // ---- what the model has posted ----
+  // A run lands an hour at a time, so for a while after it starts its later
+  // hours do not exist anywhere yet. Those hours are hatched on the slider and
+  // stepping, dragging and playing keep to the ones that do.
+  function lastHour(){ return (POSTED===null||POSTED>=CFG.max_fxx)?CFG.max_fxx:Math.max(0,POSTED); }
+  function notPosted(h){
+    status(MODEL.toUpperCase()+" has not posted F+"+pad(h)+" of this run yet. It is out through F+"+pad(lastHour())+"; the rest are still coming in.");
+    clearTimeout(notPosted.t); notPosted.t=setTimeout(function(){ status(null); },4500);
+  }
+  function showPosted(){
+    var sl=$("slider"), note=$("postednote"), last=lastHour(), max=CFG.max_fxx;
+    if(radarMode||activeIsTile||last>=max){
+      sl.style.background=""; note.className=""; note.textContent="";
+    } else {
+      var at="calc(9px + (100% - 18px) * "+((last+STEP/2)/max).toFixed(4)+")";
+      sl.style.background="linear-gradient(90deg, #26313f "+at+", transparent "+at+"),"+
+        "repeating-linear-gradient(135deg, #3a2f1c 0 3px, #161d27 3px 6px)";
+      note.className="on"; note.textContent="  ·  posted through F+"+pad(last);
+    }
+    Array.prototype.forEach.call($("ticks").children,function(sp){
+      sp.className=(!radarMode&&!activeIsTile&&+sp.textContent.slice(1)>last)?"later":"";
+    });
+  }
+  function loadPosted(){
+    var m=MODEL, r=run;
+    if(!r) return Promise.resolve();
+    return fetch("/api/posted?model="+m+"&run="+r).then(function(x){ return x.json(); }).then(function(j){
+      if(m!==MODEL||r!==run||j.through===undefined) return;
+      POSTED=j.through; showPosted();
+    }).catch(function(){});
   }
 
   // ---- controls ----
@@ -490,7 +529,7 @@
   function prefetch(){                 // warm all HRRR frames so the loop is smooth
     // a static sheet is a far heavier draw; its loop waits on each frame instead
     if(prefetched||activeIsTile||MODE==="static") return; prefetched=true;
-    for(var h=(curField().min_fxx||0);h<=CFG.max_fxx;h+=STEP){ var im=new Image(); im.src=overlayUrl(h); }
+    for(var h=(curField().min_fxx||0);h<=lastHour();h+=STEP){ var im=new Image(); im.src=overlayUrl(h); }
   }
   function tick(){ if(MODE==="static"&&shareBusy) return; tlNext(); }
   function play(){ if(activeIsTile&&!radarMode)return; playing=true;playBtn.textContent="⏸"; prefetch(); timer=setInterval(tick,parseInt($("speed").value,10)); }
@@ -630,10 +669,10 @@
   }
   function setRun(r){
     if(!r||r===run) return;
-    stop(); run=r; READY={}; prefetched=false;
+    stop(); run=r; READY={}; prefetched=false; POSTED=null; showPosted();
     $("runpill").textContent="";
     showRun();
-    loadReady(false).then(function(){ setField(field); });
+    loadReady(false).then(loadPosted).then(function(){ setField(field); });
   }
   $("runsel").addEventListener("change",function(e){ setRun(e.target.value); });
   $("runolder").addEventListener("click",function(){ var at=RUNS.findIndex(function(r){ return r.run===run; }); if(at<RUNS.length-1) setRun(RUNS[at+1].run); });
@@ -694,6 +733,7 @@
     if(onlyReady()) setFxx(fxx);
   });
   setInterval(function(){ if(CFG&&MODE==="static"){ loadReady(); loadRuns(); } },120000);   // the server keeps drawing
+  setInterval(function(){ if(CFG&&POSTED!==null&&POSTED<CFG.max_fxx) loadPosted(); },90000);  // and the model keeps posting
 
   function fitShare(){              // the bar wraps on a narrow screen
     $("share").style.top=$("bar").offsetHeight+"px";
@@ -785,8 +825,8 @@
       fxx=Math.min(cfg.max_fxx, Math.round(fxx/STEP)*STEP);
       // ask what is drawn before showing anything, so the first map up is one
       // that is ready rather than one that has to be made
-      READY={};
-      return loadReady(true).then(function(){ setField(field); });
+      READY={}; POSTED=null;
+      return loadReady(true).then(loadPosted).then(function(){ setField(field); });
     });
   }
   $("model").addEventListener("change",function(e){

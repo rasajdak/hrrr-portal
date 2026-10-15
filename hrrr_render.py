@@ -587,7 +587,7 @@ def _idx(url):
         text = _http(_index_url(url), timeout=30).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         if e.code in (403, 404):
-            raise RuntimeError("that forecast hour is not posted yet")
+            raise RuntimeError("the model has not posted that forecast hour yet")
         raise
     if url.startswith(ECMWF_HOST):
         import json
@@ -1025,6 +1025,40 @@ def latest_available_run(model="hrrr", max_age=240):
         return base - timedelta(hours=2 * m["cycle"])      # not cached: ask again
     _RUNS[model] = (time.time(), found)
     return found
+
+
+_POSTED = {}            # (model, run) -> (time asked, last hour posted)
+
+
+def posted_through(model, run_dt):
+    """
+    The last forecast hour of a run that is posted, or -1 if none is yet. A
+    run's hours land in order, so the answer is found by halving: a finished
+    run costs one request, one still landing about eight. A finished run is
+    remembered for good, one still landing for a minute and a half.
+    """
+    key = (model, run_dt)
+    hit = _POSTED.get(key)
+    m = MODELS[model]
+    if hit and (hit[1] >= m["max_fxx"] or time.time() - hit[0] < 90):
+        return hit[1]
+    hours = list(range(0, m["max_fxx"] + 1, m["step"]))
+    there = lambda h: _exists(_index_url(_grib_url(model, "sfc", run_dt, h)))
+    if there(hours[-1]):
+        last = hours[-1]
+    else:
+        lo, hi = -1, len(hours) - 1          # hours[lo] is posted (or lo is -1); hours[hi] is not
+        if hit and hit[1] >= 0:
+            lo = hours.index(hit[1]) if hit[1] in hours else -1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if there(hours[mid]):
+                lo = mid
+            else:
+                hi = mid
+        last = hours[lo] if lo >= 0 else -1
+    _POSTED[key] = (time.time(), last)
+    return last
 
 
 # ---- point sampling (click-to-probe & meteograms) --------------------------
