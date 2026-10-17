@@ -451,8 +451,8 @@ FIELDS = {
 
     # ---- clouds & radiation --------------------------------------------
     "tcdc": dict(group="Clouds & radiation", label="Total cloud cover", unit="%",
-        product="sfc", search=":TCDC:entire atmosphere:" + INST, conv=None, cmap="bone", vmin=0, vmax=100,
-        per=dict(nam=dict(search=":TCDC:entire atmosphere"))),
+        product="sfc", search=":TCDC:entire atmosphere:" + INST, conv=None, cmap="_cloud", vmin=0, vmax=100,
+        rev="c1", per=dict(nam=dict(search=":TCDC:entire atmosphere"))),
     "ceil": dict(group="Clouds & radiation", label="Cloud ceiling height", unit="kft",
         product="sfc", search=":HGT:cloud ceiling:", conv=M2KFT, cmap="cividis",
         vmin=0, vmax=12),
@@ -1242,9 +1242,29 @@ def _clear(color):
     return (r, g, b, 0.0)
 
 
+def _cloud_cover():
+    """
+    Clouds the way a satellite sees them: clear sky is no paint at all, so the
+    ground shows through as itself, and the cloud thickens to near-opaque white.
+    Thin cover is a faint grey veil; overcast is solid.
+    """
+    t = np.linspace(0.0, 1.0, 256)
+    a = np.clip((t - 0.12) / 0.80, 0.0, 1.0)
+    a = 0.97 * a * a * (3.0 - 2.0 * a)               # smoothstep: soft edges, solid core
+    g = 0.80 + 0.20 * np.clip((t - 0.3) / 0.6, 0.0, 1.0)   # grey-white thin, pure white thick
+    rgba = np.stack([g, g, g * 1.01, a], axis=1).clip(0, 1)
+    cmap = ListedColormap(rgba)
+    cmap.set_under(_clear("white"))
+    cmap.set_over(rgba[-1])
+    cmap.set_bad((0, 0, 0, 0))
+    return cmap, Normalize(vmin=0, vmax=100, clip=True)
+
+
 def _cmap_norm(f):
     if f.get("cmap") == "_nws":
         return _nws_reflectivity()
+    if f.get("cmap") == "_cloud":
+        return _cloud_cover()
     if f.get("typed"):
         cmap = ListedColormap(f["typed"]["colors"])
         cmap.set_bad((0, 0, 0, 0))
@@ -1290,7 +1310,8 @@ def render(field_key, run_dt, fxx, model="hrrr"):
     or fetch failure.
     """
     spec(field_key, model)                             # validate before touching disk
-    out_path = _cache_path(model, field_key, run_dt.strftime("%Y%m%d%H"), "%03d" % fxx)
+    out_path = _cache_path(model, field_key + FIELDS[field_key].get("rev", ""),
+                           run_dt.strftime("%Y%m%d%H"), "%03d" % fxx)
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         return out_path
     f, data, lat, lon = _field(field_key, model, run_dt, fxx)
@@ -1971,8 +1992,26 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     else:
         if not f.get("cats"):
             sv = _smooth(sv, max(1, passes // 2))
-        ax.pcolormesh(sx, sy, np.ma.masked_invalid(sv),
-                      cmap=cmap, norm=norm, shading=_shading(f), zorder=2, rasterized=True)
+        if f.get("cmap") == "_cloud":
+            # Clouds sit over the hillshade, not under it, and cast a soft grey
+            # shadow down and to the right so white reads against the pale land.
+            # The shadow is the cloud grid shifted a few cells within itself, so
+            # it never spills past the model's own edge.
+            cw = np.nanmedian(np.abs(np.diff(sx, axis=1))) or 1.0
+            ch = np.nanmedian(np.abs(np.diff(sy, axis=0))) or 1.0
+            dj = int(round(0.004 * (x1 - x0) / cw)) * (1 if np.nanmean(np.diff(sx, axis=1)) > 0 else -1)
+            di = int(round(0.006 * (y1 - y0) / ch)) * (-1 if np.nanmean(np.diff(sy, axis=0)) > 0 else 1)
+            sh = np.full_like(sv, np.nan)
+            src = sv[max(0, -di):sv.shape[0] - max(0, di), max(0, -dj):sv.shape[1] - max(0, dj)]
+            sh[max(0, di):max(0, di) + src.shape[0], max(0, dj):max(0, dj) + src.shape[1]] = src
+            shadow = ListedColormap(np.c_[np.full((256, 3), 0.25), 0.28 * cmap(np.linspace(0, 1, 256))[:, 3]])
+            ax.pcolormesh(sx, sy, np.ma.masked_invalid(_smooth(sh, 3)), cmap=shadow, norm=norm,
+                          shading=_shading(f), zorder=2.55, rasterized=True)
+            ax.pcolormesh(sx, sy, np.ma.masked_invalid(sv),
+                          cmap=cmap, norm=norm, shading=_shading(f), zorder=2.6, rasterized=True)
+        else:
+            ax.pcolormesh(sx, sy, np.ma.masked_invalid(sv),
+                          cmap=cmap, norm=norm, shading=_shading(f), zorder=2, rasterized=True)
     if shade is not None:
         ax.imshow(relief.overlay(shade, 0.34, 0.26), extent=(x0, x1, y0, y1), origin="upper",
                   interpolation="nearest", zorder=2.5)
