@@ -90,6 +90,15 @@ KINDS = {
                  stops=[(0, "#d6ecf5"), (15, "#d6ecf5"), (25, "#8fcbe9"), (35, "#4d9ad6"),
                         (45, "#5a6bc8"), (55, "#8b4fbe"), (65, "#c23ea0"), (75, "#e8457a"),
                         (90, "#f68a4b"), (110, "#fde07a"), (127.5, "#fff6c9")]),
+    # Clouds as a satellite sees them: clear sky is no paint, so the ground
+    # shows as itself; thin cover is a faint grey veil and overcast is white,
+    # with a soft shadow cast down and to the right (`shadow`). HRRR's 15-minute
+    # files carry no cloud cover, so this kind steps hourly (`hourly`). No
+    # numbers at the cities (`numbers`): the picture says it.
+    "cloud": dict(label="Cloud cover", title="Futurecast clouds", field="tcdc", unit="%",
+                  lo=0.0, hi=100.0, alpha=0.96, clear=(10.0, 92.0), shadow=0.30,
+                  hourly=True, numbers=False, edge=20, ticks=[0, 25, 50, 75, 100],
+                  stops=[(0, "#9aa5b1"), (40, "#c9d0d8"), (75, "#eef1f4"), (100, "#ffffff")]),
 }
 
 
@@ -120,9 +129,13 @@ def latest_run(model):
     return run - timedelta(hours=1)
 
 
-def minutes(model):
-    L = LOOPS[model]
-    return list(range(0, L["to"] + 1, L["step"]))
+def step(model, kind="radar"):
+    """Minutes between frames: the model's own, or hourly for a kind its sub-hourly files lack."""
+    return max(LOOPS[model]["step"], 60 if KINDS[kind].get("hourly") else 0)
+
+
+def minutes(model, kind="radar"):
+    return list(range(0, LOOPS[model]["to"] + 1, step(model, kind)))
 
 
 # ----------------------------------------------------------------- weather ---
@@ -155,7 +168,7 @@ def _scalar(model, run_dt, m, kind):
     """(values in the kind's units, lat, lon) at m minutes into the run."""
     k = KINDS[kind]
     f = hr.spec(k["field"], model)
-    if model == "hrrr":
+    if model == "hrrr" and not k.get("hourly"):
         url = hr._grib_url("hrrr", "subh", run_dt, int(math.ceil(m / 60.0)))
         when = "anl:" if m == 0 else "%d min fcst:" % m
         arrs, lat, lon = hr._one(model, url, f["search"].rstrip(":") + ":" + when)
@@ -281,6 +294,12 @@ def _scalar_frames(model, run_dt, m, regions, kind):
         # off the grid reads as the bottom of the scale (clear, for gusts)
         ok = (i >= 0) & (i <= lat.shape[0] - 1) & (j >= 0) & (j <= lat.shape[1] - 1)
         v = np.where(ok, _sample(data, i, j), k["lo"])
+        if k.get("edge"):
+            # feathered out over the last `edge` grid cells, so cloud does not
+            # stop on a hard line where the model's grid ends
+            n, mm = lat.shape
+            near = np.minimum(np.minimum(i, n - 1 - i), np.minimum(j, mm - 1 - j))
+            v = k["lo"] + (v - k["lo"]) * np.clip(near / k["edge"], 0.0, 1.0)
         v = hr._smooth(v, passes)
         r = np.clip(np.round((v - k["lo"]) / (k["hi"] - k["lo"]) * 255.0), 0, 255).astype("uint8")
         rgb = np.zeros(r.shape + (3,), dtype="uint8")
@@ -409,9 +428,9 @@ def frame_path(model, run_dt, m, region, kind="radar"):
 
 def frame_png(model, run_dt, m, region, kind="radar"):
     _kind(kind)
-    if m not in minutes(model):
+    if m not in minutes(model, kind):
         raise ValueError("%s frames are every %d minutes out to %d hours" % (
-            hr.MODELS[model]["label"], LOOPS[model]["step"], LOOPS[model]["to"] // 60))
+            hr.MODELS[model]["label"], step(model, kind), LOOPS[model]["to"] // 60))
     frames(model, run_dt, m, [region], kind=kind)
     return frame_path(model, run_dt, m, region, kind)
 
@@ -455,7 +474,7 @@ def base_png(region, layer):
         put("land", facecolor=hr.LAND, edgecolor="none", zorder=1)
         put("lakes", facecolor=hr.WATER, edgecolor="none", zorder=1)
         try:
-            shade = relief.shade(region, proj, x0, x1, y0, y1, BASE_W, BASE_H, hr.CACHE_DIR)
+            shade = relief.shade(region + _tag(region), proj, x0, x1, y0, y1, BASE_W, BASE_H, hr.CACHE_DIR)
             ax.imshow(relief.overlay(shade, 0.50, 0.75), extent=(x0, x1, y0, y1), origin="upper",
                       interpolation="nearest", zorder=1.5)
             ax.set_xlim(x0, x1)
@@ -500,7 +519,7 @@ def recent_runs(model, region, have, count=None, kind="radar"):
     """
     cycle = hr.MODELS[model]["cycle"]
     count = count or {1: 10, 6: 5, 12: 4}.get(cycle, 5)
-    latest, mins = latest_run(model), minutes(model)
+    latest, mins = latest_run(model), minutes(model, kind)
     out = []
     for k in range(count):
         r = latest - timedelta(hours=k * cycle)
@@ -532,12 +551,13 @@ def meta(model, region, run=None, kind="radar"):
     if run is None or run > newest:
         run = newest
     stamp = run.strftime("%Y%m%d%H")
-    mins = minutes(model)
+    mins = minutes(model, kind)
     have = {n for n in os.listdir(hr.CACHE_DIR) if n.startswith("loop_")}
     k = KINDS[kind]
     scale = {} if kind == "radar" else dict(
         unit=k["unit"], lo=k["lo"], hi=k["hi"], alpha=k["alpha"], clear=k["clear"],
-        ticks=k["ticks"], stops=k["stops"], cities=cities(region))
+        ticks=k["ticks"], stops=k["stops"], shadow=k.get("shadow", 0.0),
+        cities=cities(region) if k.get("numbers", True) else None)
     return dict(
         kind=kind, kind_label=k["label"], title=k["title"], scale=scale,
         kinds=[dict(key=key, label=v["label"]) for key, v in KINDS.items()],
@@ -545,7 +565,7 @@ def meta(model, region, run=None, kind="radar"):
         region=region, tall=tall, region_label=hr.REGIONS[name]["label"], tz=hr.REGIONS[name]["tz"],
         run=stamp, run_iso=run.strftime("%Y-%m-%dT%H:00:00Z"),
         latest_run=newest.strftime("%Y%m%d%H"), runs=recent_runs(model, region, have, kind=kind),
-        step=LOOPS[model]["step"], minutes=mins,
+        step=step(model, kind), minutes=mins,
         ready=[m for m in mins if os.path.basename(frame_path(model, run, m, region, kind)) in have],
         width=BASE_W, height=BASE_H, frame_w=FRAME_W, frame_h=FRAME_H,
         flow_scale=flow_scale(model, region),

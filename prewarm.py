@@ -77,8 +77,8 @@ WIDE = dict(
     areas=["wny", "newyork", "northeast", "greatlakes", "conus"],
     loop_areas=["wny", "newyork", "northeast", "greatlakes", "conus",
                 "wny@tall", "newyork@tall", "northeast@tall", "greatlakes@tall"],
-    # temperature and gust loops: one download a frame, not six
-    loop_kinds=["radar", "temp", "gust"],
+    # temperature, gust and cloud loops: one download a frame, not six
+    loop_kinds=["radar", "temp", "gust", "cloud"],
     plan={
         "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=1, to=18, arrive=[18], lake=1,
                       long=dict(at=[24, 30, 36, 42, 48], every=1, arrive=[36, 48], lake=3)),
@@ -146,7 +146,7 @@ def groups(want=LEAN):
             continue
         lrun = loop.latest_run(model)
         for kind in want.get("loop_kinds", ["radar"]):
-            for m in loop.minutes(model):
+            for m in loop.minutes(model, kind):
                 todo = [r for r in LOOP_AREAS if not os.path.exists(loop.frame_path(model, lrun, m, r, kind))]
                 yield model, lrun, "loop" if kind == "radar" else "loop:" + kind, m, todo
 

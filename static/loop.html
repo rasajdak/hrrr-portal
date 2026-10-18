@@ -38,7 +38,7 @@
   <div id="bar">
     <h1>Futurecast loop</h1>
     <div class="group"><label for="kind">Show</label>
-      <select id="kind"><option value="radar">Radar</option><option value="temp">Temperature</option><option value="gust">Wind gusts</option></select></div>
+      <select id="kind"><option value="radar">Radar</option><option value="temp">Temperature</option><option value="gust">Wind gusts</option><option value="cloud">Cloud cover</option></select></div>
     <div class="group"><label for="model">Model</label><select id="model"></select></div>
     <div class="group"><label for="region">Region</label><select id="region"></select></div>
     <div class="group" title="Which model run the loop plays. Times are Eastern. A dot marks a run whose frames are already drawn.">
@@ -94,11 +94,12 @@
   var MODEL="hrrr", REGION="wny", RUN=null, KIND="radar";   // RUN null: the newest complete run
   var cityVals=[];                                      // per frame, each city's number (temperature, gusts)
   try{ MODEL=localStorage.getItem("loopmodel")||MODEL; REGION=localStorage.getItem("region")||REGION; KIND=localStorage.getItem("loopkind")||KIND; }catch(e){}
-  if(["radar","temp","gust"].indexOf(KIND)<0) KIND="radar";
+  if(["radar","temp","gust","cloud"].indexOf(KIND)<0) KIND="radar";
   var HELP={
     radar:"Simulated radar from the model, coloured by what is falling: green rain, pink wintry mix, blue snow. Between forecast times the weather is carried along its own motion, so bands travel. Space plays and pauses.",
     temp:"The model's temperature 2 m above the ground, with the number at each city. The freezing line is where blue turns green. Space plays and pauses.",
-    gust:"The strongest wind gusts the model expects near the ground, with the number at each city. Calm air under about 15 mph is left clear. Space plays and pauses."
+    gust:"The strongest wind gusts the model expects near the ground, with the number at each city. Calm air under about 15 mph is left clear. Space plays and pauses.",
+    cloud:"The model's total cloud cover, drawn the way a satellite would see it: clear sky shows the ground, thin cloud is a grey veil, overcast is white. Hourly, since HRRR's 15-minute files carry no clouds. Space plays and pauses."
   };
   if(REGION==="conus"&&!localStorage.getItem("loopregion")) REGION="wny";
   try{ REGION=localStorage.getItem("loopregion")||REGION; }catch(e){}
@@ -114,7 +115,7 @@
       "uniform sampler2D A, B, PAL, F; uniform float t; uniform vec2 fs; in vec2 uv; out vec4 o;",
       // one number a pixel (temperature, gusts): its scale, how opaque, and the
       // stretch at the bottom that fades out (c0 == c1: none)
-      "uniform int mode; uniform float lo, hi, alpha, c0, c1;",
+      "uniform int mode; uniform float lo, hi, alpha, c0, c1, shade; uniform vec2 off;",
       // one colour family: six stops across 5..55 dBZ, flat steps with soft joins
       "vec3 ramp(int g, float d){",
       "  float x=clamp((d-5.)/10., 0., 4.999); int i=int(floor(x)); float f=smoothstep(.30,.70,fract(x));",
@@ -125,6 +126,9 @@
       "    float s=mix(texture(A,uv).r, texture(B,uv).r, t);",
       "    vec3 c=texture(PAL, vec2((s*255.+.5)/256., .5)).rgb;",
       "    float a=alpha*(c1>c0 ? smoothstep(c0,c1,lo+s*(hi-lo)) : 1.);",
+      // clouds: the same field, offset, as a soft shadow on the ground under them
+      "    if(shade>0.){ float z=mix(texture(A,uv-off).r, texture(B,uv-off).r, t);",
+      "      float sa=shade*smoothstep(c0,c1,lo+z*(hi-lo))*(1.-a); o=vec4(c*a, a+sa); return; }",
       "    o=vec4(c*a, a); return; }",
       // F is how far the weather travels from A to B. Slide A forward along it
       // and B back, then blend: a band moves, where a plain fade would dim it
@@ -143,7 +147,7 @@
     var buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
     var loc=gl.getAttribLocation(prog,"p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-    ["A","B","PAL","F","t","fs","mode","lo","hi","alpha","c0","c1"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
+    ["A","B","PAL","F","t","fs","mode","lo","hi","alpha","c0","c1","shade","off"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
     gl.uniform1i(U.A,0); gl.uniform1i(U.B,1); gl.uniform1i(U.PAL,2); gl.uniform1i(U.F,3);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
     // "no motion", used until a pair's flow arrives (and for good if it never does)
@@ -305,6 +309,7 @@
       if(META.kind!=="radar"){
         gl.uniform1f(U.lo,sc.lo); gl.uniform1f(U.hi,sc.hi); gl.uniform1f(U.alpha,sc.alpha);
         gl.uniform1f(U.c0,sc.clear?sc.clear[0]:0); gl.uniform1f(U.c1,sc.clear?sc.clear[1]:0);
+        gl.uniform1f(U.shade,sc.shadow||0); gl.uniform2f(U.off,(TALL?6:9)/MW,(TALL?10:9)/MH);
       }
       gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
       ctx.drawImage(glc,0,HEAD);
@@ -320,7 +325,7 @@
       // day and time above (the thing a viewer has to read at a glance), the
       // legend and whose map it is below. The map between them is left clear.
       // Inside each band the text has the same space above it as below it.
-      var bh=276, by=H-bh, band="rgba(15,23,35,.95)";
+      var bh=276, by=H-bh, band="rgba(15,23,35,.95)";     // 276 + the 8 px line: TALL_CLEAR in hrrr_render.py
       ctx.fillStyle=band; ctx.fillRect(0,0,W,bh); ctx.fillRect(0,by,W,bh);
       ctx.textBaseline="middle";
       // top: name line, then the time, centred as one group
@@ -414,6 +419,7 @@
     var lab=META.kind_label+" ("+sc.unit+")"; ctx.fillText(lab, x, y+bh/2);
     var bx=x+ctx.measureText(lab).width+18*k, bw=w-(bx-x);
     for(var i=0;i<bw;i+=2){ var c=scaleColor(sc.stops, v0+(v1-v0)*i/bw); ctx.fillStyle="rgb("+c+")"; ctx.fillRect(bx+i,y,2.5,bh); }
+    ctx.lineWidth=1; ctx.strokeStyle=onDark?"rgba(255,255,255,.35)":"rgba(15,23,35,.35)"; ctx.strokeRect(bx+.5,y+.5,bw-1,bh-1);   // a white end on a white card
     ctx.textAlign="center"; ctx.font='500 '+Math.round(21*k)+'px Barlow, sans-serif'; ctx.fillStyle=onDark?"#b9c8da":"#333";
     t.forEach(function(v){ var tx=bx+(v-v0)/(v1-v0)*bw; ctx.fillRect(tx-1,y+bh,2,7*k); ctx.fillText(String(v), tx, y+bh+22*k); });
   }

@@ -1632,7 +1632,7 @@ def map_path(model, field_key, run_dt, fxx, region, shape="wide"):
     # does not throw away every other map on disk
     return _cache_path("map", MAP_REV, model, field_key + FIELDS[field_key].get("rev", ""),
                        _ymdh(run_dt),
-                       "%03d" % fxx, region + SHAPES[shape]["key"] + ("" if shape == "wide" else "+t3"))
+                       "%03d" % fxx, region + SHAPES[shape]["key"] + ("" if shape == "wide" else "+t4"))
 
 
 def render_map(field_key, run_dt, fxx, region="conus", model="hrrr", shape="wide"):
@@ -1766,12 +1766,17 @@ def _basemap(region, proj, x0, x1, y0, y1):
 # bands, wasted a third of the screen and squashed the map; it was thrown out.)
 TALL_W, TALL_H = 1080, 1920
 TALL = float(TALL_W) / TALL_H
-TALL_TAG = "_v3"           # in cache names of upright layers; bump when this frame changes
+# The loop page lays a dark band 284 px deep (with its accent line) over the top
+# and the bottom of the reel; this is the share of its height left clear
+# between them. The region is fitted into that clear middle, so nothing of it
+# hides under a band. Keep it in step with `bh` in static/loop.html.
+TALL_CLEAR = (TALL_H - 2 * 284.0) / TALL_H
+TALL_TAG = "_v4"           # in cache names of upright layers; bump when this frame changes
 
 
 # how a region key may be framed, and what marks its cached layers (bump a mark
 # when that frame changes)
-FRAMINGS = {"": "", "tall": TALL_TAG, "sq": "_s1", "pt": "_p1"}
+FRAMINGS = {"": "", "tall": TALL_TAG, "sq": "_s2", "pt": "_p2"}
 
 
 def region_parts(region):
@@ -1820,12 +1825,15 @@ def frame(region):
     pts = proj.transform_points(pc, edge_lon, edge_lat)
     x0, x1, y0, y1 = pts[:, 0].min(), pts[:, 0].max(), pts[:, 1].min(), pts[:, 1].max()
     if aspect:
-        # A frame squarer or taller than the region cannot hold all of it. Keep
-        # most of the width, or about twice the height, whichever asks for
-        # less, and centre it: the sides are trimmed and the map runs further
-        # north and south than the landscape one.
+        # A frame squarer or taller than the region holds all of it, with a
+        # little to spare, centred: the whole width fits across (a wide region
+        # then runs further north and south than the landscape map) and the
+        # whole height fits in the part a reel's bands leave clear. (Trimming
+        # the sides instead cut off the edge of every region in 9:16.)
+        clear = TALL_CLEAR if region.partition("@")[2] == "tall" else 1.0
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        h = min(0.85 * (x1 - x0) / aspect, 1.9 * (y1 - y0))
+        seen = max(1.04 * (x1 - x0) * clear / aspect, 1.06 * (y1 - y0))    # height of the clear part
+        h = seen / clear
         return proj, cx - h * aspect / 2, cx + h * aspect / 2, cy - h / 2, cy + h / 2
     want = (MAP_W * _MAP_AX[2]) / (MAP_H * _MAP_AX[3])
     if (x1 - x0) / (y1 - y0) < want:
@@ -1929,7 +1937,7 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     try:
         import relief
         box = ax.get_window_extent()
-        shade = relief.shade(region, proj, x0, x1, y0, y1, int(round(box.width)),
+        shade = relief.shade(region + _framing(region)[0], proj, x0, x1, y0, y1, int(round(box.width)),
                              int(round(box.height)), CACHE_DIR)
         ax.imshow(relief.overlay(shade, 0.50, 0.75), extent=(x0, x1, y0, y1), origin="upper",
                   interpolation="nearest", zorder=1.5)
