@@ -78,7 +78,7 @@ WIDE = dict(
     loop_areas=["wny", "newyork", "northeast", "greatlakes", "conus",
                 "wny@tall", "newyork@tall", "northeast@tall", "greatlakes@tall"],
     # temperature, gust and cloud loops: one download a frame, not six
-    loop_kinds=["radar", "temp", "gust", "cloud"],
+    loop_kinds=["radar", "temp", "gust", "cloud", "lake"],
     plan={
         "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=1, to=18, arrive=[18], lake=1,
                       long=dict(at=[24, 30, 36, 42, 48], every=1, arrive=[36, 48], lake=3)),
@@ -146,8 +146,12 @@ def groups(want=LEAN):
             continue
         lrun = loop.latest_run(model)
         for kind in want.get("loop_kinds", ["radar"]):
-            for m in loop.minutes(model, kind):
-                todo = [r for r in LOOP_AREAS if not os.path.exists(loop.frame_path(model, lrun, m, r, kind))]
+            # the lake effect score only where there are lakes, and not on RAP's
+            # or the HRDPS's files, which carry no score
+            areas = LOOP_AREAS if kind != "lake" else \
+                [r for r in LOOP_AREAS if hr.region_parts(r)[0] in LAKE_AREAS] if p["lake"] else []
+            for m in loop.minutes(model, kind) if areas else ():
+                todo = [r for r in areas if not os.path.exists(loop.frame_path(model, lrun, m, r, kind))]
                 yield model, lrun, "loop" if kind == "radar" else "loop:" + kind, m, todo
 
 

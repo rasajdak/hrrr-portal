@@ -15,7 +15,7 @@ Endpoints
   GET /api/status             -> the same, as JSON
   GET /loop                   -> the animated futurecast page
   GET /api/loop               -> its run, frame times and layers (query: model, region, run, kind)
-  GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m; kind radar|temp|gust)
+  GET /api/loop/frame         -> one time's weather as a data PNG (adds: run, m; kind radar|temp|gust|cloud|lake)
   GET /api/loop/base          -> a region's base or label layer (query: region, layer)
   GET /share                  -> a page around one static map, for posting a link
   GET /api/legend?field=...   -> colorbar PNG for a field

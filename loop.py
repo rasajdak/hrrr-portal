@@ -99,6 +99,14 @@ KINDS = {
                   lo=0.0, hi=100.0, alpha=0.96, clear=(10.0, 92.0), shadow=0.30,
                   hourly=True, numbers=False, edge=20, ticks=[0, 25, 50, 75, 100],
                   stops=[(0, "#9aa5b1"), (40, "#c9d0d8"), (75, "#eef1f4"), (100, "#ffffff")]),
+    # The lake effect score (lake_effect.py), drawn like radar: three numbers a
+    # pixel, the score for what would fall as rain, a mix and snow, coloured by
+    # whichever is strongest (`typed`). A score is no echo that travels, so it
+    # blends in place, and it is worked out from hourly files (`hourly`).
+    # Numbers at the cities only where there is a score to speak of.
+    "lake": dict(label="Lake effect", title="Lake effect potential", field="lake_effect", unit="of 100",
+                 lo=0.0, hi=100.0, clear=(15.0, 15.0), hourly=True,
+                 typed=dict(colors=hr.LAKE_COLORS, levels=hr.LAKE_LEVELS, span=hr.LAKE_TYPED["span"])),
 }
 
 
@@ -253,6 +261,10 @@ def frames(model, run_dt, m, regions, flows=True, kind="radar"):
     frame are the cost and they are the same for all of them.
     """
     todo = [r for r in regions if not os.path.exists(frame_path(model, run_dt, m, r, kind))]
+    if KINDS[kind].get("typed"):
+        if todo:
+            _typed_frames(model, run_dt, m, todo, kind)
+        return
     if kind != "radar":
         if todo:
             _scalar_frames(model, run_dt, m, todo, kind)
@@ -280,6 +292,26 @@ def frames(model, run_dt, m, regions, flows=True, kind="radar"):
         os.replace(tmp, path)
     if flows:
         _pair_up(model, run_dt, m, regions)
+
+
+def _typed_frames(model, run_dt, m, regions, kind):
+    """A score that comes as group * 100 + score, split into a channel per group like radar."""
+    from PIL import Image
+    k = KINDS[kind]
+    data, lat, lon = hr._fetch(hr.spec(k["field"], model), model, run_dt, m // 60)
+    ok = np.isfinite(data)
+    group, score = np.where(ok, data // 100, -1), np.where(ok, data % 100, 0.0)
+    chans = [np.where(group == g, score, 0.0).astype("float32") for g in range(3)]
+    for region in regions:
+        i, j = _index(model, region, lat, lon)
+        cell = abs(float(i[0, 0] - i[-1, 0])) / i.shape[0]
+        passes = 2 if cell > 0.5 else int(min(10, round(1.5 / max(cell, 0.05))))
+        rgb = np.stack([hr._smooth(_sample(c, i, j), passes) for c in chans], axis=-1)
+        img = Image.fromarray(np.clip(rgb / k["hi"] * 255.0, 0, 255).astype("uint8"), "RGB")
+        path = frame_path(model, run_dt, m, region, kind)
+        tmp = hr.part_name(path)
+        img.save(tmp, format="PNG", optimize=True)
+        os.replace(tmp, path)
 
 
 def _scalar_frames(model, run_dt, m, regions, kind):
@@ -554,12 +586,24 @@ def meta(model, region, run=None, kind="radar"):
     mins = minutes(model, kind)
     have = {n for n in os.listdir(hr.CACHE_DIR) if n.startswith("loop_")}
     k = KINDS[kind]
-    scale = {} if kind == "radar" else dict(
-        unit=k["unit"], lo=k["lo"], hi=k["hi"], alpha=k["alpha"], clear=k["clear"],
-        ticks=k["ticks"], stops=k["stops"], shadow=k.get("shadow", 0.0),
-        cities=cities(region) if k.get("numbers", True) else None)
+    if k.get("field"):
+        hr.spec(k["field"], model)          # ValueError if this model does not carry it
+    typed = k.get("typed")
+    if kind == "radar":
+        scale = {}
+    elif typed:
+        scale = dict(unit=k["unit"], lo=k["lo"], hi=k["hi"], clear=k["clear"], cities=cities(region))
+    else:
+        scale = dict(
+            unit=k["unit"], lo=k["lo"], hi=k["hi"], alpha=k["alpha"], clear=k["clear"],
+            ticks=k["ticks"], stops=k["stops"], shadow=k.get("shadow", 0.0),
+            cities=cities(region) if k.get("numbers", True) else None)
+    # how a typed picture's colour steps run: first level, step, and the
+    # value at full brightness in a frame (radar: 5 dBZ, 10 dBZ steps, 75 dBZ)
+    ramp = [typed["levels"][0], typed["levels"][1] - typed["levels"][0], k["hi"]] if typed else [5, 10, 75]
     return dict(
         kind=kind, kind_label=k["label"], title=k["title"], scale=scale,
+        typed=kind == "radar" or bool(typed), ramp=ramp, span=(typed or {}).get("span", "light to heavy"),
         kinds=[dict(key=key, label=v["label"]) for key, v in KINDS.items()],
         model=model, name=hr.MODELS[model]["name"], credit=hr.credit(model),
         region=region, tall=tall, region_label=hr.REGIONS[name]["label"], tz=hr.REGIONS[name]["tz"],
@@ -571,5 +615,6 @@ def meta(model, region, run=None, kind="radar"):
         flow_scale=flow_scale(model, region),
         models=[dict(key=k, label=v["label"]) for k, v in LOOPS.items()],
         regions=hr.region_catalog(),
-        colors=hr.RP_COLORS, levels=hr.RP_LEVELS, groups=hr.RP_GROUPS,
+        colors=(typed or {}).get("colors", hr.RP_COLORS), levels=(typed or {}).get("levels", hr.RP_LEVELS),
+        groups=hr.RP_GROUPS,
     )

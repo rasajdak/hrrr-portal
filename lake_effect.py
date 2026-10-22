@@ -14,8 +14,16 @@ faster in light wind. That "heated fetch" sets the score, trimmed where the
 wind turns with height (bands shear apart) and where warm air aloft caps the
 clouds low.
 
-numpy only, and no model knowledge: hrrr_render hands it arrays.
+Ground that rises downwind of a lake wrings more out of the same air: the Tug
+Hill takes the most snow east of Lake Ontario, not the beach. So the heated
+fetch counts for more where the air has climbed since the low ground it last
+crossed (lake_terrain.npz, built by verify/build_terrain.py).
+
+numpy only, and no model knowledge: hrrr_render hands it arrays. verify/ holds
+the check against observed snowfall that these numbers were set by.
 """
+
+import os
 
 import numpy as np
 
@@ -29,8 +37,30 @@ KM_PER_DEG = 111.19
 STEP_KM = 6.0                     # one stride back along the wind
 REACH_KM = 500.0                  # how far upwind to look
 DT_NONE, DT_FULL = 10.0, 22.0     # lake minus 850 mb, C: no weight .. full weight
-FETCH_KM = 170.0                  # heated fetch at which the score is 63
+FETCH_KM = 240.0                  # heated fetch at which the score is 63 (170 before the terrain gain)
 INLAND_KM = 110.0                 # e-folding distance over land in a 10 m/s wind
+RISE_KM = 60.0                    # how far upwind the low ground is looked for
+RISE_FULL = 250.0                 # m climbed above it for the whole terrain gain
+RISE_GAIN = 1.5                   # heated fetch counts (1 + this) times there
+
+_TERRAIN = None
+
+
+def terrain(lat, lon):
+    """Ground height in m at each lat, lon (bilinear from lake_terrain.npz); 0 outside it."""
+    global _TERRAIN
+    if _TERRAIN is None:
+        t = np.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "lake_terrain.npz"))
+        _TERRAIN = (float(t["lon0"]), float(t["lat0"]), float(t["step"]), t["z"].astype("float32"))
+    lon0, lat0, step, z = _TERRAIN
+    x, y = (lon - lon0) / step, (lat - lat0) / step
+    off = (x < 0) | (y < 0) | (x > z.shape[1] - 1) | (y > z.shape[0] - 1)
+    x, y = np.clip(x, 0, z.shape[1] - 1.001), np.clip(y, 0, z.shape[0] - 1.001)
+    i, j = x.astype(int), y.astype(int)
+    fx, fy = x - i, y - j
+    out = (z[j, i] * (1 - fx) * (1 - fy) + z[j, i + 1] * fx * (1 - fy)
+           + z[j + 1, i] * (1 - fx) * fy + z[j + 1, i + 1] * fx * fy)
+    return np.where(off, 0.0, out)
 
 
 def _ramp(x, x0, x1, y0, y1):
@@ -48,10 +78,27 @@ def index(lat, lon, tsfc, land, ice, t850, t700, winds, grid_relative):
                     rather than east and north
     """
     out = np.full(lat.shape, np.nan, dtype="float32")
+    got = parts(lat, lon, tsfc, land, ice, t850, t700, winds, grid_relative)
+    if got is None:
+        return out
+    sl, inbox, fetch, rise, trim = got
+    fetch = fetch * (1.0 + RISE_GAIN * _ramp(rise, 0.0, RISE_FULL, 0.0, 1.0))
+    score = 100.0 * (1.0 - np.exp(-fetch / FETCH_KM)) * trim
+    out[sl] = np.where(inbox, score, np.nan)
+    return out
+
+
+def parts(lat, lon, tsfc, land, ice, t850, t700, winds, grid_relative):
+    """
+    What the score is put together from, on the part of the grid inside BOX:
+    (slice of the grid, inside-BOX mask, heated fetch in km, m climbed, the
+    shear and cap trim 0..1). None if the grid misses BOX. Apart from index()
+    so verify/ can try other weightings without fetching a run again.
+    """
     w, e, s, n = BOX
     inbox = (lon >= w) & (lon <= e) & (lat >= s) & (lat <= n)
     if not inbox.any():
-        return out
+        return None
     rows, cols = np.where(inbox.any(axis=1))[0], np.where(inbox.any(axis=0))[0]
     sl = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
     lat, lon = lat[sl].astype("float64"), lon[sl].astype("float64")
@@ -94,8 +141,10 @@ def index(lat, lon, tsfc, land, ice, t850, t700, winds, grid_relative):
     pj, pi = np.mgrid[0:ny, 0:nx].astype("float64")
     fetch = np.zeros((ny, nx))
     over_land = np.zeros((ny, nx))
+    elev = terrain(lat, lon)
+    low = elev.copy()                                  # the lowest ground within RISE_KM upwind
     alive = np.ones((ny, nx), dtype=bool)
-    for _ in range(int(REACH_KM / STEP_KM)):
+    for step in range(int(REACH_KM / STEP_KM)):
         j, i = np.rint(pj).astype(int), np.rint(pi).astype(int)
         alive &= (j >= 0) & (j < ny) & (i >= 0) & (i < nx)
         if not alive.any():
@@ -103,6 +152,8 @@ def index(lat, lon, tsfc, land, ice, t850, t700, winds, grid_relative):
         j, i = np.clip(j, 0, ny - 1), np.clip(i, 0, nx - 1)
         fetch += np.where(alive, heat[j, i] * STEP_KM * np.exp(-over_land / reach), 0.0)
         over_land += np.where(water[j, i], 0.0, STEP_KM)
+        if step * STEP_KM <= RISE_KM:
+            low = np.where(alive, np.minimum(low, elev[j, i]), low)
         pi += di[j, i] * STEP_KM
         pj += dj[j, i] * STEP_KM
 
@@ -113,6 +164,4 @@ def index(lat, lon, tsfc, land, ice, t850, t700, winds, grid_relative):
     # 850 to 700 mb: about 10 C colder aloft is a deep, open layer; under 4 C is a lid
     cap = _ramp(t850 - t700, 4.0, 10.0, 0.6, 1.0)
 
-    score = 100.0 * (1.0 - np.exp(-fetch / FETCH_KM)) * shear * cap
-    out[sl] = np.where(inbox[sl], score, np.nan)
-    return out
+    return sl, inbox[sl], fetch, elev - low, shear * cap

@@ -444,7 +444,7 @@ FIELDS = {
     # (see _lake_effect). RAP's file has no land mask, so it sits this one out.
     "lake_effect": dict(group="Snow & ice", label="Lake effect potential", unit="of 100",
         models=("hrrr", "nam", "gfs", "ecmwf"), product="sfc", lake=True, search=":TMP:surface:",
-        conv=None, typed=LAKE_TYPED, vmin=15, vmax=100, mask_under=True),
+        conv=None, typed=LAKE_TYPED, vmin=15, vmax=100, mask_under=True, rev="t1"),
     "frzlvl": dict(group="Snow & ice", label="Freezing level height", unit="kft",
         models=("hrrr",), product="sfc", search=":HGT:0C isotherm:", conv=M2KFT, cmap="Spectral",
         vmin=0, vmax=16),
