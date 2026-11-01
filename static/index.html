@@ -800,7 +800,7 @@
   // ---- boot + model switch ----
   function buildTicks(){
     var t=$("ticks"), every=STEP; t.innerHTML="";
-    [1,3,6,12,24,48].some(function(n){ every=n; return n>=STEP && CFG.max_fxx/n<=9; });
+    [1,3,6,12,24,48,168].some(function(n){ every=n; return n>=STEP && CFG.max_fxx/n<=9; });
     for(var h=0;h<=CFG.max_fxx;h+=every){ var sp=document.createElement("span"); sp.textContent="F"+h; t.appendChild(sp); }
   }
   function loadModel(m, first){
@@ -809,8 +809,9 @@
     return fetch("/api/config?model="+m).then(function(r){return r.json();}).then(function(cfg){
       CFG=cfg; MODEL=cfg.model; STEP=cfg.step_hours; run=cfg.latest_run; bounds=cfg.bounds;
       var me=cfg.models.find(function(x){return x.key===MODEL;});
-      $("modeldesc").textContent=me.desc+" · raw GRIB2";
-      $("credit").textContent="Data: "+me.credit+" · rendered from raw GRIB2";
+      var raw=me.grib?" · raw GRIB2":"";
+      $("modeldesc").textContent=me.desc+raw;
+      $("credit").textContent="Data: "+me.credit+(me.grib?" · rendered from raw GRIB2":"");
       $("runpill").textContent=""; RUNS=[];
       loadRuns();
       $("slider").max=cfg.max_fxx; $("fmax").textContent=cfg.max_fxx;
@@ -834,9 +835,9 @@
       buildTicks(); fitShare();
       // keep the field across a model switch when the new model carries it
       var keep=tileField(field)||cfg.fields.some(function(f){return f.key===field;});
-      if(!keep) field=cfg.fields.some(function(f){return f.key==="refc";})?"refc":"t2m";
+      if(!keep) field=["refc","t2m"].find(function(k){ return cfg.fields.some(function(f){return f.key===k;}); })||cfg.fields[0].key;
       sel.value=field;
-      fxx=Math.min(cfg.max_fxx, Math.round(fxx/STEP)*STEP);
+      fxx=me.opens_at||Math.min(cfg.max_fxx, Math.round(fxx/STEP)*STEP);
       // ask what is drawn before showing anything, so the first map up is one
       // that is ready rather than one that has to be made
       READY={}; POSTED=null;

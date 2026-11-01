@@ -8,8 +8,10 @@ for it.
 - **Models:** HRRR (3 km, hourly, 18 h), NAM CONUS nest (3 km, every 6 h, 60 h),
   RAP (13 km, hourly, 21 h), GFS (0.25 degree, every 6 h, 10 days) from NOAA's
   public AWS buckets, and ECMWF IFS (0.25 degree, 00Z and 12Z, 10 days) from the
-  open-data mirror on Google Cloud (the AWS one throttles with 503s). No
-  credentials anywhere. Add one in `MODELS`.
+  open-data mirror on Google Cloud (the AWS one throttles with 503s). HRDPS
+  (2.5 km, every 6 h, 48 h) from Environment Canada. ECMWF's 46-day ensemble
+  (EC46, 0.4 degree, daily, 51 members) through Open-Meteo. No credentials
+  anywhere. Add one in `MODELS`.
 - **Subsetting:** each GRIB's `.idx` sidecar gives every message's byte offset,
   so one HTTP Range request pulls **only the requested field** (~1 MB), not the
   ~150 MB file. This is done directly with urllib; Herbie is no longer used.
@@ -71,6 +73,15 @@ Two things the files do not hand over directly:
   precipitation bucket times the share of that window it was snowing (`CSNOW`
   average), at 10:1, summed. Running totals are kept per frame in `cache/acc_*`
   and pruned after 36 hours.
+
+- **EC46 snowfall.** The 46-day ensemble is not in ECMWF's free files and has no
+  GRIB here. `_ec46` asks Open-Meteo for every member's daily snow water at a
+  grid of points for the region on show, sums it, and offers the average and
+  the median at 10:1. A region costs one call per point, up to 1,500, once per
+  run, and its first map takes up to about three minutes. The live map and
+  clicked points use the coarser United States grid. Open-Meteo's free tier is
+  for non-commercial use only (10,000 calls a day, 300,000 a month), attribution
+  required, and it keeps only the newest run, so this model has no run history.
 
 ## Static maps
 `/api/map` draws a finished 2400 x 1500 picture in a Lambert conformal fitted to

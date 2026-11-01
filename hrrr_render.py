@@ -16,7 +16,9 @@ The overlay image spans exactly the lat/lon box in EXTENT below, so the frontend
 overlays it with bounds [[S, W], [N, E]] and it registers correctly.
 """
 
+import fcntl
 import io
+import json
 import math
 import os
 import re
@@ -25,6 +27,7 @@ import hashlib
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
@@ -162,6 +165,11 @@ MODELS = {
     "hrdps": dict(label="HRDPS", name="HRDPS 2.5 km", desc="Canadian High Resolution Deterministic · 2.5 km · every 6 h, out 48 h",
         cycle=6, max_fxx=48, step=1, probe=48, back=5, stride=2,
         url=MSC_HOST + "/{ymd}/WXO-DD/model_hrdps/continental/2.5km/{hh}/{fxx:03d}/"),
+    # ECMWF's 46-day ensemble is not in its free files, so it comes from
+    # Open-Meteo a point at a time (see _ec46). No GRIB, no url, and only the
+    # newest run: Open-Meteo does not keep the ones before it.
+    "ec46": dict(label="ECMWF 46-day", name="ECMWF EC46 ensemble", desc="ECMWF extended ensemble · 51 members · daily, out 46 days",
+        cycle=24, max_fxx=1104, step=24, probe=1104, back=0, stride=1, runs=1, opens_at=1104, url=""),
 }
 ALL = ("hrrr", "nam", "rap", "gfs")
 
@@ -421,6 +429,12 @@ FIELDS = {
         product="sfc", search=":WEASD:surface:" + BUCKET, conv=SWE2SNOW,
         levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1,
         per=dict(gfs=GFS_SNOW)),
+    "snow_ens": dict(group="Snow & ice", label="Ensemble average snowfall at 10:1 since run start", unit="in",
+        models=("ec46",), ec46="mean", conv=SWE2SNOW,
+        levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1),
+    "snow_ens_med": dict(group="Snow & ice", label="Ensemble median snowfall at 10:1 since run start", unit="in",
+        models=("ec46",), ec46="median", conv=SWE2SNOW,
+        levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1),
     "ptype": dict(group="Snow & ice", label="Precipitation type", unit="type",
         product="sfc", ptype=True, search=":CRAIN:surface:" + INST, conv=None,
         levels=[0.5, 1.5, 2.5, 3.5, 4.5], colors=PTYPE_COLORS, cats=PTYPE_CATS,
@@ -612,6 +626,8 @@ def credit(model):
     # Licence: for both, the attribution is a condition of use
     if model == "ecmwf":
         return "ECMWF IFS open data (CC BY 4.0)"
+    if model == "ec46":
+        return "ECMWF EC46 through Open-Meteo.com (CC BY 4.0)"
     if model == "hrdps":
         return "Environment and Climate Change Canada HRDPS"
     return "NOAA " + MODELS[model]["label"].split()[0]
@@ -619,7 +635,8 @@ def credit(model):
 
 def model_catalog():
     return [dict(key=k, label=m["label"], name=m["name"], desc=m["desc"], credit=credit(k),
-                 max_fxx=run_max(k), step=m["step"]) for k, m in MODELS.items()]
+                 max_fxx=run_max(k), step=m["step"], grib=bool(m["url"]),
+                 opens_at=m.get("opens_at")) for k, m in MODELS.items()]
 
 
 def extent_bounds():
@@ -1066,8 +1083,116 @@ def _rp_index(dbz, group, levels=RP_LEVELS):
     return out
 
 
-def _fetch(f, model, run_dt, fxx):
+# ---- ECMWF's 46-day ensemble, through Open-Meteo ---------------------------
+# Their free tier is for non-commercial use and counts one call per point per
+# run of this: 600 a minute, 10,000 a day, 300,000 a month. So a region is only
+# fetched when someone opens it, once per run, and never past EC46_POINTS.
+# Snowfall is asked for as water and made into snow at 10:1 by the field's conv:
+# their own `snowfall_sum` is 7:1.
+EC46_API = "https://seasonal-api.open-meteo.com"
+EC46_POINTS = 1500
+EC46_BATCH = 200
+EC46_SPACING = 0.4      # degrees: the model's own grid, nothing is gained finer
+
+
+def _ec46_grid(region):
+    """
+    A map's points, and which of them to ask for: a lat/lon grid over its frame,
+    less the points outside the frame (a Lambert frame fills its box unevenly).
+    """
+    proj, x0, x1, y0, y1 = frame(region)
+    px, py = (x1 - x0) * 0.06, (y1 - y0) * 0.06
+    x0, x1, y0, y1 = x0 - px, x1 + px, y0 - py, y1 + py
+    pc = ccrs.PlateCarree()
+    t = np.linspace(0, 1, 40)
+    xs = np.concatenate([x0 + t * (x1 - x0), x0 + t * (x1 - x0), np.full(40, x0), np.full(40, x1)])
+    ys = np.concatenate([np.full(40, y0), np.full(40, y1), y0 + t * (y1 - y0), y0 + t * (y1 - y0)])
+    edge = pc.transform_points(proj, xs, ys)
+    step = EC46_SPACING
+    while True:
+        lat, lon = np.meshgrid(np.arange(edge[:, 1].min(), edge[:, 1].max() + step, step),
+                               np.arange(edge[:, 0].min(), edge[:, 0].max() + step, step), indexing="ij")
+        xy = proj.transform_points(pc, lon, lat)
+        keep = (xy[..., 0] > x0) & (xy[..., 0] < x1) & (xy[..., 1] > y0) & (xy[..., 1] < y1)
+        if keep.sum() <= EC46_POINTS:
+            return lat, lon, keep
+        step *= 1.05
+
+
+def _ec46_batch(lats, lons, start, end):
+    """One request's points, as a list of daily series, keeping to the minute's limit."""
+    body = urllib.parse.urlencode(dict(
+        latitude=",".join("%.2f" % v for v in lats), longitude=",".join("%.2f" % v for v in lons),
+        models="ecmwf_ec46", daily="snowfall_water_equivalent_sum", timezone="GMT",
+        start_date=start, end_date=end)).encode()
+    req = urllib.request.Request(EC46_API + "/v1/seasonal", data=body, headers={"User-Agent": "hrrr-portal"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                left = float(r.headers.get("X-RateLimit-Remaining", 600))
+                reset = float(r.headers.get("X-RateLimit-Reset", 0))
+                out = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 2:
+                raise RuntimeError("Open-Meteo answered %d: %s" % (e.code, e.read()[:200]))
+            time.sleep(30)
+    if left < EC46_BATCH:
+        time.sleep(min(61, max(0, reset - time.time()) + 1))
+    return out if isinstance(out, list) else [out]
+
+
+def _ec46_download(lat, lon, keep, run_dt):
+    """Every member's running total, (members, days, ny, nx), in mm of water."""
+    start = run_dt.strftime("%Y-%m-%d")
+    end = (run_dt + timedelta(days=45)).strftime("%Y-%m-%d")
+    lats, lons = lat[keep], lon[keep]
+    points = []
+    for i in range(0, lats.size, EC46_BATCH):
+        for p in _ec46_batch(lats[i:i + EC46_BATCH], lons[i:i + EC46_BATCH], start, end):
+            d = p["daily"]
+            points.append([d[k] for k in sorted(d) if k != "time"])
+    a = np.array(points, dtype="float32")              # (points, members, days)
+    a = np.nan_to_num(a).cumsum(axis=2).transpose(1, 2, 0)
+    out = np.zeros(a.shape[:2] + lat.shape, dtype="float32")
+    out[..., keep] = a
+    return out
+
+
+def _ec46(f, run_dt, fxx, region=None):
+    """
+    The ensemble's mean or median total by forecast hour. The members are kept
+    per region and run, since a median cannot be made from a stored mean. With
+    no region (the live map, a clicked point) the whole country is used.
+    """
+    region = region or "conus"
+    lat, lon, keep = _ec46_grid(region)
+    path = os.path.join(CACHE_DIR, "acc_ec46_%s_%s.npz" % (region, _ymdh(run_dt)))
+    with open(path + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)               # the page may ask for two hours at once
+        if not os.path.exists(path):
+            if run_dt != latest_available_run("ec46"):
+                raise ValueError("Open-Meteo only has the newest EC46 run")
+            total = _ec46_download(lat, lon, keep, run_dt)
+            tmp = part_name(path)
+            with open(tmp, "wb") as fh:
+                np.savez_compressed(fh, a=total)
+            os.replace(tmp, path)
+    _prune()
+    total = np.load(path)["a"][:, fxx // 24 - 1]
+    data = np.mean(total, axis=0) if f["ec46"] == "mean" else np.median(total, axis=0)
+    # past the frame nothing was asked for: carry the edge outward, so smoothing
+    # the map does not pull its rim toward zero
+    data = np.nan_to_num(_spread(np.where(keep, data, np.nan), 8))
+    if region == "conus":
+        _GRID["ec46"] = (lat.ravel(), lon.ravel())
+    return data, lat, lon
+
+
+def _fetch(f, model, run_dt, fxx, region=None):
     """(data, lat, lon) for a field spec, raw units, on the model's grid."""
+    if f.get("ec46"):
+        return _ec46(f, run_dt, fxx, region)
     if f.get("radar_ptype"):
         return _radar_ptype(model, run_dt, fxx)
     if f.get("lake"):
@@ -1121,7 +1246,7 @@ def _fetch(f, model, run_dt, fxx):
     return arrs[0], lat, lon
 
 
-def _field(field_key, model, run_dt, fxx):
+def _field(field_key, model, run_dt, fxx, region=None):
     """Fetch + unit-convert, with the forecast-hour check both renderers need."""
     f = spec(field_key, model)
     m = MODELS[model]
@@ -1129,7 +1254,7 @@ def _field(field_key, model, run_dt, fxx):
         raise ValueError("%s needs forecast hour >= %d" % (field_key, f["min_fxx"]))
     if fxx > run_max(model, run_dt) or fxx % m["step"]:
         raise ValueError("%s frames are every %d h out to %d" % (m["label"], m["step"], run_max(model, run_dt)))
-    data, lat, lon = _fetch(f, model, run_dt, fxx)
+    data, lat, lon = _fetch(f, model, run_dt, fxx, region)
     if f["conv"]:
         data = f["conv"](data)
     if f.get("arrival"):
@@ -1153,6 +1278,14 @@ def latest_available_run(model="hrrr", max_age=240):
     m = MODELS[model]
     base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     base -= timedelta(hours=base.hour % m["cycle"])
+    if model == "ec46":                                # no files to probe: Open-Meteo says
+        try:
+            meta = json.loads(_http(EC46_API + "/data/ecmwf_ec46/static/meta.json", timeout=20))
+        except Exception:
+            return base - timedelta(hours=m["cycle"])  # not cached: ask again
+        found = datetime.fromtimestamp(meta["last_run_initialisation_time"], timezone.utc)
+        _RUNS[model] = (time.time(), found)
+        return found
     found = None
     # from the run of this very hour: HRRR's first hours land about 50 minutes in
     for b in range(0, m["back"] + 1):
@@ -1176,6 +1309,8 @@ def posted_through(model, run_dt):
     run costs one request, one still landing about eight. A finished run is
     remembered for good, one still landing for a minute and a half.
     """
+    if model == "ec46":                                # Open-Meteo holds a run whole or not at all
+        return run_max(model, run_dt)
     key = (model, run_dt)
     hit = _POSTED.get(key)
     m = MODELS[model]
@@ -1645,7 +1780,7 @@ def render_map(field_key, run_dt, fxx, region="conus", model="hrrr", shape="wide
     out_path = map_path(model, field_key, run_dt, fxx, region, shape)
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         return out_path
-    f, data, lat, lon = _field(field_key, model, run_dt, fxx)
+    f, data, lat, lon = _field(field_key, model, run_dt, fxx, region + SHAPES[shape]["key"])
     _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape)
     return out_path
 
@@ -1657,7 +1792,7 @@ def recent_runs(model, count=None):
     runs are not probed; NOAA and ECMWF keep them far longer than this reaches.
     """
     m = MODELS[model]
-    count = count or {1: 12, 6: 6, 12: 4}.get(m["cycle"], 6)
+    count = count or m.get("runs") or {1: 12, 6: 6, 12: 4}.get(m["cycle"], 6)
     latest = latest_available_run(model)
     have = set(os.listdir(CACHE_DIR))
     out = []
@@ -1912,7 +2047,9 @@ def _draw_map(f, data, lat, lon, out_path, model, run_dt, fxx, region, shape="wi
     if not inview.any():
         raise ValueError("that region is outside the model's grid")
     rows, cols = np.where(inview.any(axis=1))[0], np.where(inview.any(axis=0))[0]
-    sl = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
+    # a cell past the view each way: on a coarse grid the next row can be needed
+    # to reach the frame, where a parallel curves away from its edge
+    sl = (slice(max(rows[0] - 1, 0), rows[-1] + 2), slice(max(cols[0] - 1, 0), cols[-1] + 2))
     gx, gy, vals = gx[sl], gy[sl], np.asarray(data[sl], dtype="float32")
     stride = max(1, int(math.ceil(max(vals.shape) / 1100.0)))
 
