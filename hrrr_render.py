@@ -648,7 +648,8 @@ def credit(model):
     if model == "hrdps":
         return "Environment and Climate Change Canada HRDPS"
     if model == "blend":
-        return "Ryan Sajdak blend of ECMWF IFS open data (CC BY 4.0) and NOAA GFS"
+        return ("Ryan Sajdak blend: ECMWF IFS (50% at hour 0, 70% at hour 240) with NOAA GFS; "
+                "GFS alone past hour 240 · ECMWF open data CC BY 4.0")
     return "NOAA " + MODELS[model]["label"].split()[0]
 
 

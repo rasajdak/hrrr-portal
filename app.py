@@ -500,7 +500,11 @@ def share():
     img = "%sapi/map?%s" % (root, q)
     title = escape("%s %s, %s" % (hr.MODELS[model]["name"], f["label"],
                                   hr.REGIONS[region]["label"]))
-    desc = escape(hr._when(run, fxx, hr.REGIONS[region]["tz"]).replace("  ·  ", ", "))
+    desc = hr._when(run, fxx, hr.REGIONS[region]["tz"]).replace("  ·  ", ", ")
+    if model == "blend":
+        desc = ("Ryan Sajdak blend: an average of the ECMWF and GFS forecasts, ECMWF weighted 50% "
+                "at hour 0 rising to 70% at hour 240, GFS alone past hour 240. " + desc)
+    desc = escape(desc)
     return Response(
         "<!doctype html><html lang=en><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
