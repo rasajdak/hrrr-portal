@@ -1239,15 +1239,44 @@ def _blend_kuchera(run_dt, fxx):
     the blended mean temperature of the 2 m, 850 mb and 700 mb levels (an
     average of the three as a stand-in for the layer to 700 mb).
     """
-    snow, TLAT, TLON = _blend("snow10", run_dt, fxx)
-    t2f, _, _ = _blend("t2m", run_dt, fxx)
-    t850, _, _ = _blend("t850", run_dt, fxx)
-    t700, _, _ = _blend("t700", run_dt, fxx)
+    snow, TLAT, TLON = _blend_raw("snow10", run_dt, fxx)
+    t2f, _, _ = _blend_raw("t2m", run_dt, fxx)
+    t850, _, _ = _blend_raw("t850", run_dt, fxx)
+    t700, _, _ = _blend_raw("t700", run_dt, fxx)
     mean_c = ((t2f - 32.0) * 5.0 / 9.0 + t850 + t700) / 3.0
     return snow / 10.0 * _kuchera_ratio(mean_c), TLAT, TLON
 
 
+# Totals since the run began. They cannot fall from one hour to the next, but a
+# raw blend can: the Kuchera ratio falls as the air warms, and the weights
+# change when ECMWF runs out at hour 240. So each hour is the larger of its own
+# value and the hour before, carried along the run.
+CUMULATIVE_BLEND = ("snow10", "kuchera")
+
+
 def _blend(field_key, run_dt, fxx):
+    """The blend of one field at one hour (see _blend_raw), made non-decreasing for totals."""
+    if field_key not in CUMULATIVE_BLEND:
+        return _blend_raw(field_key, run_dt, fxx)
+    step = MODELS["blend"]["step"]
+    tlat, tlon = blend_mod.target_grid(EXTENT)
+    TLON, TLAT = np.meshgrid(tlon, tlat)
+    if fxx <= step:
+        out, TLAT, TLON = _blend_raw(field_key, run_dt, fxx)
+        return out, TLAT, TLON
+    path = os.path.join(CACHE_DIR, "blendrun_%s_%s_%03d.npy" % (
+        field_key, run_dt.strftime("%Y%m%d%H"), fxx))
+    _GRID["blend"] = (TLAT.ravel(), TLON.ravel())
+    if os.path.exists(path):
+        return np.load(path), TLAT, TLON
+    prev, _, _ = _blend(field_key, run_dt, fxx - step)
+    cur, TLAT, TLON = _blend_raw(field_key, run_dt, fxx)
+    out = np.where(np.isfinite(cur), np.fmax(cur, prev), prev)
+    np.save(path, out)
+    return out, TLAT, TLON
+
+
+def _blend_raw(field_key, run_dt, fxx):
     """
     The Ryan Sajdak blend of one field at one hour: each member model's own
     spec and unit conversion, cut and regridded to the shared grid, then
