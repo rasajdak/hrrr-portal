@@ -62,7 +62,7 @@ def _tag(region):
 LOOPS = {
     "hrrr":  dict(step=15,  to=18 * 60,  label="HRRR, next 18 hours"),
     "nam":   dict(step=60,  to=60 * 60,  label="NAM 3 km, next 60 hours"),
-    "gfs":   dict(step=60,  to=72 * 60,  label="GFS, next 3 days"),
+    "gfs":   dict(step=60,  to=384 * 60, label="GFS, next 16 days"),
     "ecmwf": dict(step=180, to=120 * 60, label="ECMWF, next 5 days"),
     "hrdps": dict(step=60,  to=48 * 60,  label="HRDPS (Canada), next 48 hours"),
 }

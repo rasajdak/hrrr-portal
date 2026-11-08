@@ -83,7 +83,7 @@ WIDE = dict(
         "hrrr":  dict(totals=["apcp_tot", "asnow"],  at=[6, 12, 18], loops=MOVING, every=1, to=18, arrive=[18], lake=1,
                       long=dict(at=[24, 30, 36, 42, 48], every=1, arrive=[36, 48], lake=3)),
         "nam":   dict(totals=["apcp_tot", "snow10"], at=[12, 24, 36, 48, 60], loops=MOVING, every=3, to=60, arrive=[36, 60], lake=3),
-        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240, arrive=[72, 120], lake=6),
+        "gfs":   dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=384, arrive=[72, 120], lake=6),
         "ecmwf": dict(totals=["apcp_tot", "snow10"], at=LONG, loops=MOVING_GLOBAL, every=6, to=240, arrive=[72, 120], lake=6),
         # RAP has no land mask, so no lake effect score; it runs every hour, so
         # every third hour is enough. The HRDPS runs four times a day: all of it.
