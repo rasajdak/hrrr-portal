@@ -32,6 +32,7 @@ import urllib.request
 from datetime import datetime, timezone, timedelta
 
 import numpy as np
+import blend as blend_mod
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -170,6 +171,12 @@ MODELS = {
     # newest run: Open-Meteo does not keep the ones before it.
     "ec46": dict(label="ECMWF 46-day", name="ECMWF EC46 ensemble", desc="ECMWF extended ensemble · 51 members · daily, out 46 days",
         cycle=24, max_fxx=1104, step=24, probe=1104, back=0, stride=1, runs=1, opens_at=1104, url=""),
+    # The Ryan Sajdak blend: ECMWF and GFS averaged on one grid (see blend.py).
+    # No files of its own. Runs are ECMWF's (00Z and 12Z, the cycles GFS also
+    # posts), and it reaches 16 days, the last 6 on GFS alone.
+    "blend": dict(label="Ryan Sajdak Blend", name="Ryan Sajdak blend",
+        desc="ECMWF + GFS blend · 0.25° · long range, out 16 days",
+        cycle=12, max_fxx=384, step=6, probe=240, back=4, stride=1, url="", blend=("ecmwf", "gfs")),
 }
 ALL = ("hrrr", "nam", "rap", "gfs")
 
@@ -578,6 +585,15 @@ HRDPS = {
 for _k, _o in HRDPS.items():
     FIELDS[_k]["models"] = FIELDS[_k].get("models", ALL) + ("hrdps",)
     FIELDS[_k].setdefault("per", {})["hrdps"] = _o
+# The blend carries the fields both long-range models post on a 0.25 degree
+# grid and that mean the same thing in both: the synoptic and the surface
+# fields, and precipitation. Radar, snow and precipitation type are left out:
+# their definitions differ between the two models.
+BLEND_FIELDS = ("t2m", "dpt2m", "wind10m", "gust", "mslp", "pwat", "tcdc", "apcp", "apcp_tot",
+                "h500", "t850", "t500", "rh700", "w700", "wind250", "wind850")
+for _k in BLEND_FIELDS:
+    FIELDS[_k]["models"] = FIELDS[_k].get("models", ALL) + ("blend",)
+    FIELDS[_k].setdefault("per", {})["blend"] = dict(conv=lambda a: a)   # members convert themselves
 # models whose radar picture is worked out from the precipitation rate
 RATE_RADAR = ("ecmwf", "hrdps")
 # WMO precipitation-type codes (table 4.201) -> rain 1, freezing rain 2, sleet
@@ -603,6 +619,7 @@ def spec(field_key, model="hrrr"):
     out.update(f.get("per", {}).get(model, {}))
     out["label"] = f["label"].format(step=step)
     out["min_fxx"] = step if f.get("min_fxx") else 0
+    out["key"] = field_key
     return out
 
 
@@ -630,6 +647,8 @@ def credit(model):
         return "ECMWF EC46 through Open-Meteo.com (CC BY 4.0)"
     if model == "hrdps":
         return "Environment and Climate Change Canada HRDPS"
+    if model == "blend":
+        return "Ryan Sajdak blend of ECMWF IFS open data (CC BY 4.0) and NOAA GFS"
     return "NOAA " + MODELS[model]["label"].split()[0]
 
 
@@ -1189,10 +1208,35 @@ def _ec46(f, run_dt, fxx, region=None):
     return data, lat, lon
 
 
+def _blend(field_key, run_dt, fxx):
+    """
+    The Ryan Sajdak blend of one field at one hour: each member model's own
+    spec and unit conversion, cut and regridded to the shared grid, then
+    weighted (blend.py). Sets the blend's grid for point lookups.
+    """
+    members = {}
+    for m in MODELS["blend"]["blend"]:
+        if m == "ecmwf" and blend_mod.ecmwf_weight(fxx) == 0:
+            continue                                   # past ECMWF's last hour
+        sp = spec(field_key, m)
+        data, lat, lon = _fetch(sp, m, run_dt, fxx)
+        if sp["conv"]:
+            data = sp["conv"](data)
+        members[m] = (np.asarray(data, dtype=float), lat, lon)
+    tlat, tlon = blend_mod.target_grid(EXTENT)
+    parts = {m: blend_mod.regrid(d, la, lo, tlat, tlon) for m, (d, la, lo) in members.items()}
+    out = blend_mod.combine(parts, fxx)
+    TLON, TLAT = np.meshgrid(tlon, tlat)
+    _GRID["blend"] = (TLAT.ravel(), TLON.ravel())
+    return out, TLAT, TLON
+
+
 def _fetch(f, model, run_dt, fxx, region=None):
     """(data, lat, lon) for a field spec, raw units, on the model's grid."""
     if f.get("ec46"):
         return _ec46(f, run_dt, fxx, region)
+    if model == "blend":
+        return _blend(f["key"], run_dt, fxx)
     if f.get("radar_ptype"):
         return _radar_ptype(model, run_dt, fxx)
     if f.get("lake"):
@@ -1272,6 +1316,8 @@ def latest_available_run(model="hrrr", max_age=240):
     Falls back to a guess if nothing is found (offline / transient). The answer
     is kept for a few minutes: /api/config asks on every page load.
     """
+    if model == "blend":                               # its run is ECMWF's
+        return latest_available_run("ecmwf", max_age)
     hit = _RUNS.get(model)
     if hit and time.time() - hit[0] < max_age:
         return hit[1]
@@ -1311,6 +1357,12 @@ def posted_through(model, run_dt):
     """
     if model == "ec46":                                # Open-Meteo holds a run whole or not at all
         return run_max(model, run_dt)
+    if model == "blend":
+        # GFS runs past ECMWF's last hour, so past it the blend is GFS alone;
+        # before that a frame needs both
+        g = posted_through("gfs", run_dt)
+        e = posted_through("ecmwf", run_dt)
+        return g if e >= blend_mod.ECMWF_MAX else min(g, e)
     key = (model, run_dt)
     hit = _POSTED.get(key)
     m = MODELS[model]

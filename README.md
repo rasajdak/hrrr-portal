@@ -12,6 +12,9 @@ for it.
   (2.5 km, every 6 h, 48 h) from Environment Canada. ECMWF's 46-day ensemble
   (EC46, 0.4 degree, daily, 51 members) through Open-Meteo. No credentials
   anywhere. Add one in `MODELS`.
+- **Ryan Sajdak blend** (`blend`): ECMWF and GFS averaged on one 0.25° grid, 16 days.
+  ECMWF's share runs from 50% at hour 0 to 70% at hour 240, GFS takes the rest and
+  alone past hour 240. Weights and the regrid live in `blend.py`; no files of its own.
 - **Subsetting:** each GRIB's `.idx` sidecar gives every message's byte offset,
   so one HTTP Range request pulls **only the requested field** (~1 MB), not the
   ~150 MB file. This is done directly with urllib; Herbie is no longer used.
