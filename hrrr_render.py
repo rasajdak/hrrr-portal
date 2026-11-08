@@ -436,6 +436,12 @@ FIELDS = {
         product="sfc", search=":WEASD:surface:" + BUCKET, conv=SWE2SNOW,
         levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1,
         per=dict(gfs=GFS_SNOW)),
+    # Kuchera snowfall: the blend's liquid water, times a snow-to-liquid ratio set
+    # by how cold the snowing layer is (see _kuchera_ratio). Blend only.
+    "kuchera": dict(group="Snow & ice", label="Total snowfall, Kuchera ratio, since run start", unit="in",
+        product="sfc", search=None, conv=None,
+        levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1,
+        models=("blend",)),
     "snow_ens": dict(group="Snow & ice", label="Ensemble average snowfall at 10:1 since run start", unit="in",
         models=("ec46",), ec46="mean", conv=SWE2SNOW,
         levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1),
@@ -497,6 +503,8 @@ FIELDS = {
         vmin=492, vmax=600),
     "t850": dict(group="Upper air", label="850 mb temperature", unit="°C",
         product="prs", search=":TMP:850 mb:", conv=K2C, cmap="turbo", vmin=-10, vmax=35),
+    "t700": dict(group="Upper air", label="700 mb temperature", unit="°C",
+        product="prs", search=":TMP:700 mb:", conv=K2C, cmap="turbo", vmin=-25, vmax=20),
     "t500": dict(group="Upper air", label="500 mb temperature", unit="°C",
         product="prs", search=":TMP:500 mb:", conv=K2C, cmap="turbo", vmin=-30, vmax=5),
     "rh700": dict(group="Upper air", label="700 mb relative humidity", unit="%",
@@ -536,6 +544,7 @@ ECMWF = {
     "refc_ptype": dict(search=":sfc:tprate:"),
     "h500": dict(search=":pl:gh:500:"),
     "t850": dict(search=":pl:t:850:"),
+    "t700": dict(search=":pl:t:700:"),
     "t500": dict(search=":pl:t:500:"),
     "rh700": dict(search=":pl:r:700:"),
     "w700": dict(search=":pl:w:700:"),
@@ -592,7 +601,7 @@ for _k, _o in HRDPS.items():
 # type are left out: their definitions differ between the two models.
 BLEND_FIELDS = ("t2m", "dpt2m", "wind10m", "gust", "mslp", "pwat", "tcdc", "apcp", "apcp_tot",
                 "snow10", "snow_step",
-                "h500", "t850", "t500", "rh700", "w700", "wind250", "wind850")
+                "h500", "t850", "t700", "t500", "rh700", "w700", "wind250", "wind850")
 for _k in BLEND_FIELDS:
     FIELDS[_k]["models"] = FIELDS[_k].get("models", ALL) + ("blend",)
     FIELDS[_k].setdefault("per", {})["blend"] = dict(conv=lambda a: a)   # members convert themselves
@@ -1210,12 +1219,42 @@ def _ec46(f, run_dt, fxx, region=None):
     return data, lat, lon
 
 
+def _kuchera_ratio(t_c):
+    """
+    Snow-to-liquid ratio from the mean temperature (C) of the snowing layer:
+    10:1 at -2 C and warmer (wet snow), rising one to one as it gets colder, to
+    20:1 at -12 C, then half a unit per degree more, capped at 30:1. A
+    simplified Kuchera curve, not the full profile method.
+    """
+    t = np.asarray(t_c, dtype=float)
+    r = np.where(t >= -2.0, 10.0,
+        np.where(t >= -12.0, 10.0 + (-2.0 - t), 20.0 + 0.5 * (-12.0 - t)))
+    return np.minimum(r, 30.0)
+
+
+def _blend_kuchera(run_dt, fxx):
+    """
+    Kuchera snowfall for the blend: the blended 10:1 snowfall is liquid water
+    times ten, so it is divided back to liquid and multiplied by the ratio for
+    the blended mean temperature of the 2 m, 850 mb and 700 mb levels (an
+    average of the three as a stand-in for the layer to 700 mb).
+    """
+    snow, TLAT, TLON = _blend("snow10", run_dt, fxx)
+    t2f, _, _ = _blend("t2m", run_dt, fxx)
+    t850, _, _ = _blend("t850", run_dt, fxx)
+    t700, _, _ = _blend("t700", run_dt, fxx)
+    mean_c = ((t2f - 32.0) * 5.0 / 9.0 + t850 + t700) / 3.0
+    return snow / 10.0 * _kuchera_ratio(mean_c), TLAT, TLON
+
+
 def _blend(field_key, run_dt, fxx):
     """
     The Ryan Sajdak blend of one field at one hour: each member model's own
     spec and unit conversion, cut and regridded to the shared grid, then
     weighted (blend.py). Sets the blend's grid for point lookups.
     """
+    if field_key == "kuchera":
+        return _blend_kuchera(run_dt, fxx)
     members = {}
     for m in MODELS["blend"]["blend"]:
         if m == "ecmwf" and blend_mod.ecmwf_weight(fxx) == 0:
