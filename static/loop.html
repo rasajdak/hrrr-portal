@@ -449,17 +449,31 @@
 
   // ---- playback ----
   var SECONDS={hrrr:12, nam:15, gfs:60, ecmwf:15, hrdps:15};       // one pass at normal speed (gfs: 384 h in 60 s, a bit quicker than the old 72 h pace)
+  // Frames can be unevenly spaced (GFS is hourly, then 3-hourly), so the head
+  // moves through time, not through frame numbers: one pace in hours a second.
+  function timeAt(h){                                     // frame position -> minutes
+    var m=META.minutes, a=Math.floor(h), b=Math.min(a+1,m.length-1);
+    return m[a]+(h-a)*(m[b]-m[a]);
+  }
+  function idxAt(t){                                      // minutes -> frame position
+    var m=META.minutes, n=m.length;
+    if(t<=m[0]) return 0; if(t>=m[n-1]) return n-1;
+    var lo=0, hi=n-1;
+    while(hi-lo>1){ var mid=(lo+hi)>>1; if(m[mid]<=t) lo=mid; else hi=mid; }
+    return lo+(t-m[lo])/(m[hi]-m[lo]);
+  }
   function tick(now){
     requestAnimationFrame(tick);
     var dt=Math.min(0.1,(now-last)/1000); last=now;
     var n=usable();
     if(META&&playing&&n>1){
-      var end=n-1, rate=(META.minutes.length-1)/(SECONDS[MODEL]||15)*(recorder?1:parseFloat($("speed").value));
+      var end=n-1, sp=recorder?1:parseFloat($("speed").value);
+      var mps=(META.minutes[end]-META.minutes[0])/((SECONDS[MODEL]||15)*sp);   // minutes a second
       if(head>=end){                                      // rest on the last frame, then go round
         hold+=dt;
         if(recorder&&hold>0.8){ stopRecording(false); }
         else if(hold>1.2){ head=0; hold=0; }
-      } else { head=Math.min(end, head+rate*dt); }
+      } else { head=Math.min(end, idxAt(timeAt(head)+mps*dt)); }
     }
     if(META){
       $("scrub").max=Math.max(1,(META.minutes.length-1)*10); if(document.activeElement!==$("scrub")) $("scrub").value=Math.round(head*10);
