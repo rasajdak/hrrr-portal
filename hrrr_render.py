@@ -1817,7 +1817,9 @@ def map_path(model, field_key, run_dt, fxx, region, shape="wide"):
     """Where a static map lives in the cache, drawn or not."""
     # a field can carry its own `rev`, so a change to how one field is drawn
     # does not throw away every other map on disk
-    return _cache_path("map", MAP_REV, model, field_key + FIELDS[field_key].get("rev", ""),
+    # the blend's maps carry its credit line, so a change to that line re-draws them
+    blend_rev = "+s2" if model == "blend" else ""
+    return _cache_path("map", MAP_REV, model, field_key + FIELDS[field_key].get("rev", "") + blend_rev,
                        _ymdh(run_dt),
                        "%03d" % fxx, region + SHAPES[shape]["key"] + ("" if shape == "wide" else "+t4"))
 
