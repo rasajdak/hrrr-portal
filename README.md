@@ -6,7 +6,7 @@ be saved and posted. It began as an HRRR viewer and still lives in a repo named
 for it.
 
 - **Models:** HRRR (3 km, hourly, 18 h), NAM CONUS nest (3 km, every 6 h, 60 h),
-  RAP (13 km, hourly, 21 h), GFS (0.25 degree, every 6 h, 10 days) from NOAA's
+  RAP (13 km, hourly, 21 h), GFS (0.25 degree, every 6 h, 16 days) from NOAA's
   public AWS buckets, and ECMWF IFS (0.25 degree, 00Z and 12Z, 10 days) from the
   open-data mirror on Google Cloud (the AWS one throttles with 503s). HRDPS
   (2.5 km, every 6 h, 48 h) from Environment Canada. ECMWF's 46-day ensemble

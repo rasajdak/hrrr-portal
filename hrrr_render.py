@@ -147,8 +147,8 @@ MODELS = {
         cycle=1, max_fxx=21, step=1, probe=21, back=8, stride=1,
         url="https://noaa-rap-pds.s3.amazonaws.com/rap.{ymd}/"
             "rap.t{hh}z.awp130pgrbf{fxx:02d}.grib2"),
-    "gfs": dict(label="GFS", name="GFS 0.25°", desc="Global Forecast System · 0.25° · every 6 h, out 10 days",
-        cycle=6, max_fxx=240, step=6, probe=240, back=5, stride=1,
+    "gfs": dict(label="GFS", name="GFS 0.25°", desc="Global Forecast System · 0.25° · every 6 h, out 16 days",
+        cycle=6, max_fxx=384, step=6, probe=384, back=5, stride=1,
         url="https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{ymd}/{hh}/atmos/"
             "gfs.t{hh}z.pgrb2.0p25.f{fxx:03d}"),
     # ECMWF's open data. Its own index format (JSON lines, see _idx) and its own

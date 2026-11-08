@@ -55,7 +55,7 @@ import loop
 #            hour 18: totals at `at`, moving fields every `every` hours, the
 #            arrival map at `arrive`. Drawn while newer, shorter runs land.
 # Anything not listed still draws on request.
-LONG = [24, 48, 72, 120, 168, 240]
+LONG = [24, 48, 72, 120, 168, 240, 288, 336, 384]
 MOVING = ["refc_ptype", "refc", "ptype", "t2m", "gust"]
 MOVING_GLOBAL = ["refc_ptype", "ptype", "t2m", "gust"]          # no radar field worth a map
 LAKE_AREAS = ["wny", "greatlakes"]
