@@ -587,9 +587,11 @@ for _k, _o in HRDPS.items():
     FIELDS[_k].setdefault("per", {})["hrdps"] = _o
 # The blend carries the fields both long-range models post on a 0.25 degree
 # grid and that mean the same thing in both: the synoptic and the surface
-# fields, and precipitation. Radar, snow and precipitation type are left out:
-# their definitions differ between the two models.
+# fields, precipitation, and snowfall at 10:1 (each model's own snow, GFS's
+# from its precipitation and snow share, see README). Radar and precipitation
+# type are left out: their definitions differ between the two models.
 BLEND_FIELDS = ("t2m", "dpt2m", "wind10m", "gust", "mslp", "pwat", "tcdc", "apcp", "apcp_tot",
+                "snow10", "snow_step",
                 "h500", "t850", "t500", "rh700", "w700", "wind250", "wind850")
 for _k in BLEND_FIELDS:
     FIELDS[_k]["models"] = FIELDS[_k].get("models", ALL) + ("blend",)
