@@ -501,9 +501,16 @@ def share():
     title = escape("%s %s, %s" % (hr.MODELS[model]["name"], f["label"],
                                   hr.REGIONS[region]["label"]))
     desc = hr._when(run, fxx, hr.REGIONS[region]["tz"]).replace("  ·  ", ", ")
+    method = ""
     if model == "blend":
-        desc = ("Ryan Sajdak blend: an average of the ECMWF and GFS forecasts, ECMWF weighted 50% "
-                "at hour 0 rising to 70% at hour 240, GFS alone past hour 240. " + desc)
+        method = escape(
+            "How the Ryan Sajdak blend is made: the ECMWF IFS and NOAA GFS forecasts for the same run "
+            "and hour are each cut to this region, put on one 0.25 degree grid by bilinear "
+            "interpolation, then averaged. ECMWF's share is 50% at hour 0, rising in a straight line "
+            "to 70% at hour 240. GFS has the rest. Past hour 240, where ECMWF stops, the map is GFS "
+            "alone. Where one model has no value, the other carries the point at its full weight. "
+            "Totals and changes are taken from each model's own files before blending, so no model's "
+            "precipitation is mixed into another's.")
     desc = escape(desc)
     return Response(
         "<!doctype html><html lang=en><meta charset=utf-8>"
@@ -521,8 +528,9 @@ def share():
         "img{max-width:100%%;height:auto;display:block;margin:0 auto}"
         "p{font-size:14px;margin:14px}a{color:#4ea3ff}</style>"
         "<img src='%(i)s' alt='%(t)s'>"
-        "<p>%(d)s</p><p><a href='https://ryansajdak.com/'>ryansajdak.com</a></p></html>"
-        % dict(t=title, d=desc, i=escape(img), w=hr.SHAPES[shape]["w"], h=hr.SHAPES[shape]["h"]),
+        "<p>%(d)s</p>%(m)s<p><a href='https://ryansajdak.com/'>ryansajdak.com</a></p></html>"
+        % dict(t=title, d=desc, m=("<p style='max-width:640px'>%s</p>" % method) if method else "",
+               i=escape(img), w=hr.SHAPES[shape]["w"], h=hr.SHAPES[shape]["h"]),
         mimetype="text/html")
 
 
