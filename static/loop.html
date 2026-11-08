@@ -448,7 +448,7 @@
   }
 
   // ---- playback ----
-  var SECONDS={hrrr:12, nam:15, gfs:15, ecmwf:15, hrdps:15};       // one pass at normal speed
+  var SECONDS={hrrr:12, nam:15, gfs:80, ecmwf:15, hrdps:15};       // one pass at normal speed (gfs: 384 h at the 72 h pace, 15 s x 384/72)
   function tick(now){
     requestAnimationFrame(tick);
     var dt=Math.min(0.1,(now-last)/1000); last=now;
