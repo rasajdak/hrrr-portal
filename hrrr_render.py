@@ -441,7 +441,7 @@ FIELDS = {
     "kuchera": dict(group="Snow & ice", label="Total snowfall, Kuchera ratio, since run start", unit="in",
         product="sfc", search=None, conv=None,
         levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1,
-        models=("blend",)),
+        models=()),          # hidden: no model carries it (kept for later tuning, see README)
     "snow_ens": dict(group="Snow & ice", label="Ensemble average snowfall at 10:1 since run start", unit="in",
         models=("ec46",), ec46="mean", conv=SWE2SNOW,
         levels=SNOW_LEVELS, colors=SNOW_COLORS, vmin=0.1, vmax=48, mask_under=True, min_fxx=1),
