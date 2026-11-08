@@ -62,7 +62,8 @@ def _tag(region):
 LOOPS = {
     "hrrr":  dict(step=15,  to=18 * 60,  label="HRRR, next 18 hours"),
     "nam":   dict(step=60,  to=60 * 60,  label="NAM 3 km, next 60 hours"),
-    "gfs":   dict(step=60,  to=384 * 60, label="GFS, next 16 days"),
+    # GFS: hourly files to 120 h, then only every 3 h to 384 h (late=(from, step))
+    "gfs":   dict(step=60,  to=384 * 60, late=(120 * 60, 180), label="GFS, next 16 days"),
     "ecmwf": dict(step=180, to=120 * 60, label="ECMWF, next 5 days"),
     "hrdps": dict(step=60,  to=48 * 60,  label="HRDPS (Canada), next 48 hours"),
 }
@@ -143,7 +144,27 @@ def step(model, kind="radar"):
 
 
 def minutes(model, kind="radar"):
-    return list(range(0, LOOPS[model]["to"] + 1, step(model, kind)))
+    """Every frame time: at the model's step, and at its later step past `late`, if it has one."""
+    to, s = LOOPS[model]["to"], step(model, kind)
+    late = LOOPS[model].get("late")
+    if not late:
+        return list(range(0, to + 1, s))
+    cut, ls = late
+    return list(range(0, min(cut, to) + 1, s)) + list(range(cut + ls, to + 1, max(ls, s)))
+
+
+def next_minute(model, m, kind="radar"):
+    """The frame time after m, or None if m is the last one or not a frame time."""
+    ms = minutes(model, kind)
+    i = ms.index(m) if m in ms else -1
+    return ms[i + 1] if 0 <= i < len(ms) - 1 else None
+
+
+def prev_minute(model, m, kind="radar"):
+    """The frame time before m, or None."""
+    ms = minutes(model, kind)
+    i = ms.index(m) if m in ms else -1
+    return ms[i - 1] if i > 0 else None
 
 
 # ----------------------------------------------------------------- weather ---
@@ -344,12 +365,12 @@ def _scalar_frames(model, run_dt, m, regions, kind):
 
 def _pair_up(model, run_dt, m, regions):
     """Work out the flow to and from a frame's neighbours wherever both ends exist."""
-    step = LOOPS[model]["step"]
     for region in regions:
-        for a in (m - step, m):
-            if a >= 0 and a + step <= LOOPS[model]["to"] \
+        for a in (prev_minute(model, m), m):
+            b = next_minute(model, a) if a is not None else None
+            if b is not None \
                     and os.path.exists(frame_path(model, run_dt, a, region)) \
-                    and os.path.exists(frame_path(model, run_dt, a + step, region)) \
+                    and os.path.exists(frame_path(model, run_dt, b, region)) \
                     and not os.path.exists(flow_path(model, run_dt, a, region)):
                 try:
                     flow_png(model, run_dt, a, region)
@@ -432,18 +453,18 @@ def flow_path(model, run_dt, m, region):
 
 def flow_png(model, run_dt, m, region):
     """The flow from the frame at m minutes to the next one. Makes both if need be."""
-    step = LOOPS[model]["step"]
-    if m not in minutes(model) or m + step not in minutes(model):
+    nxt = next_minute(model, m)
+    if nxt is None:
         raise ValueError("no pair of frames starts at %d minutes" % m)
     path = flow_path(model, run_dt, m, region)
     if os.path.exists(path):
         return path
     from PIL import Image
     frames(model, run_dt, m, [region], flows=False)
-    frames(model, run_dt, m + step, [region], flows=False)
+    frames(model, run_dt, nxt, [region], flows=False)
     load = lambda mm: np.asarray(Image.open(frame_path(model, run_dt, mm, region)), dtype="float32").max(-1) / 255.0
     maxd = flow_scale(model, region)
-    d = np.clip(_flow(load(m), load(m + step), maxd) / maxd, -1, 1)
+    d = np.clip(_flow(load(m), load(nxt), maxd) / maxd, -1, 1)
     rgb = np.zeros(d.shape[:2] + (3,), dtype="uint8")
     rgb[..., :2] = np.round(128 + d * 127).astype("uint8")
     tmp = hr.part_name(path)

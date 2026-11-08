@@ -304,7 +304,7 @@
     var n=usable(), min=0;
     if(META&&n>0){
       var pos=Math.min(head,n-1), a=Math.floor(pos), b=Math.min(a+1,n-1);
-      min=META.minutes[a]+(pos-a)*META.step;
+      min=META.minutes[a]+(pos-a)*(META.minutes[b]-META.minutes[a]);   // frames can be unevenly spaced (GFS past 120 h)
       gl.viewport(0,0,MW,MH); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex[a]);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,tex[b]);
